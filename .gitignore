@@ -8,9 +8,15 @@ minetest-run*/
 ## Model weights and checkpoints
 weights/
 
-## External baseline repos + their checkpoints (cloned locally for zero-shot eval,
-## not vendored source -- see baselines/ in the Table 1 reproduction plan)
-baselines/
+## External baseline repos + their checkpoints/venvs/generated assets (cloned/downloaded
+## locally for zero-shot eval, not vendored source). Our own scripts directly under
+## baselines/ (e.g. eval_oasis_zeroshot.py) ARE tracked -- only the external clones and
+## generated artifacts are excluded. See baselines/ in the Table 1 reproduction plan.
+baselines/open-oasis/
+baselines/WorldMem/
+baselines/checkpoints/
+baselines/prompts/
+baselines/*/outputs/
 
 ## log files
 *.log

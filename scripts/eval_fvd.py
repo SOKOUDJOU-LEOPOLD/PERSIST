@@ -12,8 +12,18 @@ duplicating them, and is meant to be run once per method (PERSIST now; Oasis/Wor
 those baselines exist -- see the "Reproduce PERSIST paper Table 1" plan) with `--method-name`
 set accordingly, then the resulting JSONs assembled into a table.
 
-Known limitations of this first version:
-  - Single-process only (no multi-GPU episode sharding yet, unlike run_inference.py).
+Multi-GPU: episodes are sharded across processes the same way run_inference.py shards them
+(`accelerator.prepare(dataloader)`, `even_batches=True`). I3D features (not raw video, which
+would be far more data to move) are extracted per-process on its own shard, then gathered onto
+every process via `accelerate.utils.gather_object` before the Fréchet distance -- which needs
+the full real/generated feature distributions, not a per-shard one -- is computed once on the
+main process. Launch with e.g.:
+    accelerate launch --multi_gpu --num_processes 2 -m scripts.eval_fvd ...
+Known caveat: `even_batches` pads the last batch on some processes when episode count isn't
+evenly divisible by `num_processes * batch_size`, duplicating a few clips into the gathered
+features. Minor with 256 episodes over 2-4 processes; noted rather than silently ignored.
+
+Other known limitations:
   - The three Table 1 columns (200/400/600 frames) are computed by truncating ONE 600-frame
     rollout per episode, not by regenerating three separate rollouts -- the paper does not
     specify which approach it used, so this is a documented assumption, not a confirmed match.
@@ -34,15 +44,17 @@ import json
 import os
 import sys
 from dataclasses import dataclass, field
-from typing import List, Literal, Optional
+from typing import Dict, List, Literal, Optional
 
 # Make the repo root importable whether invoked as `python -m scripts.eval_fvd`
 # or `python scripts/eval_fvd.py`.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import numpy as np
 import torch
 import tyro
 from accelerate import Accelerator
+from accelerate.utils import gather_object
 from loguru import logger
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -50,7 +62,13 @@ from tqdm import tqdm
 from data_loaders.minetest_latent_camera_action_dataset import MinetestLatentCameraActionEval
 from pipelines.pipeline import VoxelFirstPipeline, pipeline_variant_overrides
 from scripts.run_inference import Checkpoints, build_context, resolve_checkpoints, resolve_dataset_root
-from utils.fvd_metric import clips_from_video, compute_fvd, load_i3d_model
+from utils.fvd_metric import (
+    I3D_FEATURE_DIM,
+    clips_from_video,
+    compute_frechet_distance,
+    extract_i3d_features,
+    load_i3d_model,
+)
 
 
 @dataclass
@@ -93,6 +111,8 @@ class Args:
 
     mixed_precision: Literal["no", "fp16", "bf16"] = "bf16"
     device: str = "cuda:0"
+    """CUDA device for single-process runs. Under `accelerate launch` the device is managed by
+    accelerate (one process per GPU) and this is ignored."""
 
     output_json: str = "outputs/eval_fvd/results.json"
     method_name: str = "PERSIST"
@@ -134,11 +154,14 @@ def to_uint8_range(x: torch.Tensor) -> torch.Tensor:
 
 def main(args: Args):
     accelerator = Accelerator(mixed_precision=args.mixed_precision)
-    device = accelerator.device if accelerator.num_processes > 1 else torch.device(args.device)
+    distributed = accelerator.num_processes > 1
+    device = accelerator.device if distributed else torch.device(args.device)
     max_frames = max(args.frame_lengths)
 
     model_config_overrides, sampler_args = pipeline_variant_overrides(args.pipeline_variant)
-    logger.info(f"Loading persist_S pipeline (variant {args.pipeline_variant}) from: {args.pipeline_path}")
+    if accelerator.is_main_process:
+        logger.info(f"Loading persist_S pipeline (variant {args.pipeline_variant}) from: {args.pipeline_path}")
+        logger.info(f"Processes: {accelerator.num_processes} | device: {device} | mixed_precision: {args.mixed_precision}")
     pipe = VoxelFirstPipeline.from_pretrained(
         args.pipeline_path,
         device=device,
@@ -152,10 +175,23 @@ def main(args: Args):
         pipe.compile_blocks()
 
     dataloader = build_dataloader(args, clip_len=max_frames)
+    if distributed:
+        # Shards episodes across processes; even_batches (default) pads so every process runs
+        # the same number of pipe() calls, keeping the rollout's periodic wait_for_everyone
+        # aligned (same rationale as run_inference.py). Caveat: this can duplicate a few clips
+        # into the gathered features when len(dataset) isn't evenly divisible by
+        # num_processes * batch_size -- a minor skew, not silently assumed away.
+        dataloader = accelerator.prepare(dataloader)
+
     i3d = load_i3d_model(args.i3d_checkpoint, device=str(device))
 
-    real_videos, gen_videos = [], []
-    for batch in tqdm(dataloader, desc=f"Rolling out {args.method_name}"):
+    # Per-length I3D feature buffers, local to this process. Streaming features per-episode
+    # (instead of accumulating raw video tensors for all episodes) keeps peak memory bounded
+    # and is what makes the cross-process gather below cheap (400-dim vectors, not video).
+    local_real_feats: Dict[int, List[np.ndarray]] = {length: [] for length in args.frame_lengths}
+    local_gen_feats: Dict[int, List[np.ndarray]] = {length: [] for length in args.frame_lengths}
+
+    for batch in tqdm(dataloader, desc=f"Rolling out {args.method_name}", disable=not accelerator.is_main_process):
         context = build_context(batch, max_frames, args.use_camera_gt, args.include_initial_voxel_frame)
         with accelerator.autocast():
             rollout = pipe(
@@ -169,6 +205,8 @@ def main(args: Args):
                 use_kv_cache=args.use_kv_cache,
                 verbose=accelerator.is_main_process,
             )
+        if distributed:
+            accelerator.wait_for_everyone()
 
         for b in range(batch["raw_images"].shape[0]):
             gen = to_uint8_range(rollout["pixel"][b]).cpu()  # (T, C, H, W)
@@ -183,24 +221,58 @@ def main(args: Args):
                     f"real={real.shape[0]}); truncating both to {n} frames."
                 )
                 gen, real = gen[:n], real[:n]
-            gen_videos.append(gen)
-            real_videos.append(real)
+
+            for length in args.frame_lengths:
+                if gen.shape[0] < length:
+                    continue
+                gen_clips = clips_from_video(gen[:length])
+                real_clips = clips_from_video(real[:length])
+                local_gen_feats[length].append(
+                    extract_i3d_features(gen_clips, i3d, device=str(device), batch_size=args.i3d_batch_size)
+                )
+                local_real_feats[length].append(
+                    extract_i3d_features(real_clips, i3d, device=str(device), batch_size=args.i3d_batch_size)
+                )
+
+        if distributed:
+            accelerator.wait_for_everyone()
 
     results = {}
     for length in sorted(args.frame_lengths):
-        real_clips = torch.cat([clips_from_video(v[:length]) for v in real_videos if v.shape[0] >= 16], dim=0)
-        gen_clips = torch.cat([clips_from_video(v[:length]) for v in gen_videos if v.shape[0] >= 16], dim=0)
-        fvd = compute_fvd(real_clips, gen_clips, i3d, device=str(device), batch_size=args.i3d_batch_size)
-        logger.info(
-            f"{args.method_name} FVD @ {length} frames: {fvd:.1f} "
-            f"({real_clips.shape[0]} real / {gen_clips.shape[0]} generated clips)"
+        local_g = (
+            np.concatenate(local_gen_feats[length], axis=0)
+            if local_gen_feats[length]
+            else np.zeros((0, I3D_FEATURE_DIM), dtype=np.float32)
         )
-        results[str(length)] = fvd
+        local_r = (
+            np.concatenate(local_real_feats[length], axis=0)
+            if local_real_feats[length]
+            else np.zeros((0, I3D_FEATURE_DIM), dtype=np.float32)
+        )
+        if distributed:
+            # gather_object moves arbitrary picklable python objects (unlike accelerator.gather,
+            # which requires matching tensor shapes across processes) -- exactly what's needed
+            # since each process may have accumulated a different number of clips.
+            gathered_g = gather_object([local_g])
+            gathered_r = gather_object([local_r])
+        else:
+            gathered_g, gathered_r = [local_g], [local_r]
 
-    os.makedirs(os.path.dirname(args.output_json) or ".", exist_ok=True)
-    with open(args.output_json, "w") as f:
-        json.dump({"method": args.method_name, "fvd": results}, f, indent=2)
-    logger.info(f"Saved results to {args.output_json}")
+        if accelerator.is_main_process:
+            all_gen = np.concatenate(gathered_g, axis=0)
+            all_real = np.concatenate(gathered_r, axis=0)
+            fvd = compute_frechet_distance(all_real, all_gen)
+            logger.info(
+                f"{args.method_name} FVD @ {length} frames: {fvd:.1f} "
+                f"({all_real.shape[0]} real / {all_gen.shape[0]} generated clips)"
+            )
+            results[str(length)] = fvd
+
+    if accelerator.is_main_process:
+        os.makedirs(os.path.dirname(args.output_json) or ".", exist_ok=True)
+        with open(args.output_json, "w") as f:
+            json.dump({"method": args.method_name, "fvd": results}, f, indent=2)
+        logger.info(f"Saved results to {args.output_json}")
 
 
 if __name__ == "__main__":
