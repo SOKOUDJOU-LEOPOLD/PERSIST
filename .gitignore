@@ -8,6 +8,10 @@ minetest-run*/
 ## Model weights and checkpoints
 weights/
 
+## External baseline repos + their checkpoints (cloned locally for zero-shot eval,
+## not vendored source -- see baselines/ in the Table 1 reproduction plan)
+baselines/
+
 ## log files
 *.log
 *.out
