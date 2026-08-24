@@ -17,6 +17,7 @@ baselines/WorldMem/
 baselines/checkpoints/
 baselines/prompts/
 baselines/*/outputs/
+baselines/outputs_worldmem_validate/
 
 ## log files
 *.log
