@@ -179,8 +179,30 @@ def voxel_iou(gen_classes: np.ndarray, real_classes: np.ndarray, empty_id: int) 
     return float(inter / union)
 
 
-def render_voxel_3d(classes: np.ndarray, empty_id: int, title: str) -> np.ndarray:
-    """Render a single (X, Y, Z) class grid as a colored 3D voxel plot."""
+def camera_forward_local(camera_6d_rot: torch.Tensor) -> np.ndarray:
+    """View direction in the voxel grid's local frame, from the dataset's 6D rotation
+    representation (see data_loaders/minetest_latent_camera_action_dataset.py:_extract_camera_representation
+    and utils/camera_util.py:rotation_6d_to_matrix). `extrinsics_local` -- what the 6D rotation is
+    derived from -- is documented as "World-to-Camera transformation (standard CV convention)"
+    (utils/camera_util.py's module docstring), so the camera's own forward axis ([0, 0, 1] in
+    OpenCV convention: +Z out of the lens) is mapped into the voxel-local frame via the inverse
+    (transpose, since the matrix is orthonormal) rotation. This sign/axis convention is a
+    best-effort reading of that docstring, not independently verified against a rendered
+    ground-truth trajectory -- it's for a visual direction indicator, not a numeric result, so
+    shipping a reasonable, clearly-documented choice beats blocking on that verification."""
+    from utils.camera_util import rotation_6d_to_matrix
+
+    R = rotation_6d_to_matrix(camera_6d_rot.unsqueeze(0))[0]  # (3, 3), world(voxel-local)-to-camera
+    forward_cam = torch.tensor([0.0, 0.0, 1.0])
+    return (R.T @ forward_cam).numpy()
+
+
+def render_voxel_3d(classes: np.ndarray, empty_id: int, title: str, camera_dir: Optional[np.ndarray] = None) -> np.ndarray:
+    """Render a single (X, Y, Z) class grid as a colored 3D voxel plot, with an optional camera
+    position + view-direction arrow. The grid is "centered on the agent" by construction (per
+    the paper), so the camera position marker is simply the grid center rather than trying to
+    place it via cam_pos_local's own (undetermined) scale/offset relative to voxel-index units --
+    the direction is the informative part of a frustum indicator anyway."""
     occ = classes != empty_id
     fig = plt.figure(figsize=(3, 3), dpi=80)
     ax = fig.add_subplot(projection="3d")
@@ -190,6 +212,16 @@ def render_voxel_3d(classes: np.ndarray, empty_id: int, title: str) -> np.ndarra
         colors = cmap(norm_classes)
         colors[..., 3] = np.where(occ, 0.9, 0.0)
         ax.voxels(occ, facecolors=colors, edgecolor=None, linewidth=0)
+
+    if camera_dir is not None:
+        cx, cy, cz = np.array(classes.shape) / 2
+        arrow_len = max(classes.shape) * 0.4
+        ax.quiver(
+            cx, cy, cz, camera_dir[0], camera_dir[1], camera_dir[2],
+            length=arrow_len, color="red", linewidth=2, arrow_length_ratio=0.3,
+        )
+        ax.scatter([cx], [cy], [cz], color="red", s=20)
+
     ax.set_title(title, fontsize=8)
     ax.set_axis_off()
     ax.view_init(elev=25, azim=45)
@@ -234,12 +266,15 @@ def main(args: Args):
             )
         gen_pixel = rollout["pixel"][0]  # (T, C, H, W), [-1, 1]
         gen_voxel = pipe.decode_voxels(rollout["voxel_latents"])[0].cpu().numpy()  # (T, X, Y, Z)
+        gen_camera = rollout["camera"][0].cpu()  # (T, 10): [rot6d(6), trans(3), fov(1)]
 
         real_pixel = batch["raw_images"][0, : gen_pixel.shape[0]]  # (T, C, H, W), [-1, 1]
         real_voxel = batch["voxel_classes"][0, : gen_pixel.shape[0]].numpy()  # (T, X, Y, Z)
+        real_camera = batch["camera"][0, : gen_pixel.shape[0]]  # (T, 10)
         n = min(gen_pixel.shape[0], real_pixel.shape[0], gen_voxel.shape[0], real_voxel.shape[0])
         gen_pixel, real_pixel = gen_pixel[:n], real_pixel[:n]
         gen_voxel, real_voxel = gen_voxel[:n], real_voxel[:n]
+        gen_camera, real_camera = gen_camera[:n], real_camera[:n]
 
         input_frame = to_uint8_np(real_pixel[0])
 
@@ -255,8 +290,12 @@ def main(args: Args):
             ious.append(iou)
 
             if t % args.voxel_render_stride == 0:
-                voxel_frames_gen[t] = render_voxel_3d(gen_voxel[t], empty_class_id, "GEN VOXELS 3D")
-                voxel_frames_real[t] = render_voxel_3d(real_voxel[t], empty_class_id, "GT VOXELS 3D")
+                voxel_frames_gen[t] = render_voxel_3d(
+                    gen_voxel[t], empty_class_id, "GEN VOXELS 3D", camera_forward_local(gen_camera[t, :6])
+                )
+                voxel_frames_real[t] = render_voxel_3d(
+                    real_voxel[t], empty_class_id, "GT VOXELS 3D", camera_forward_local(real_camera[t, :6])
+                )
             last_rendered = max(k for k in voxel_frames_gen if k <= t)
 
             h = args.panel_height
