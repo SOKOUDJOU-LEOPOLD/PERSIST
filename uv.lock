@@ -1112,6 +1112,18 @@ wheels = [
 ]
 
 [[package]]
+name = "trimesh"
+version = "5.0.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/a8/45/5b9943631f265073bb96ca4cc2a9de05d151cd8c1a6896fcbaac132a1355/trimesh-5.0.0.tar.gz", hash = "sha256:0195003198baaf2550aebe612254ba2f01c385cec46c37ecc5beca8291f79a13", size = 864019, upload-time = "2026-08-01T00:05:25.042Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/37/82/19a03ba344ecb66ea8caab697b3059e0fbea576420f99945944c479caa78/trimesh-5.0.0-py3-none-any.whl", hash = "sha256:51ec67d7f9f74b918f2a695da5fd511b9c084e96307648ae83f45b58f13f8009", size = 745494, upload-time = "2026-08-01T00:05:23.172Z" },
+]
+
+[[package]]
 name = "triton"
 version = "3.3.1"
 source = { registry = "https://pypi.org/simple" }
@@ -1208,6 +1220,7 @@ dependencies = [
     { name = "scipy" },
     { name = "setuptools" },
     { name = "tqdm" },
+    { name = "trimesh" },
     { name = "tyro" },
     { name = "utils3d" },
     { name = "xvfbwrapper" },
@@ -1244,6 +1257,7 @@ requires-dist = [
     { name = "scipy", specifier = ">=1.15.2" },
     { name = "setuptools", specifier = "==75.6.0" },
     { name = "tqdm", specifier = "==4.66.3" },
+    { name = "trimesh", specifier = ">=4.0.0" },
     { name = "tyro", specifier = ">=0.8.14" },
     { name = "utils3d", git = "https://github.com/EasternJournalist/utils3d?rev=c5daf6f6c244d251f252102d09e9b7bcef791a38" },
     { name = "xvfbwrapper", specifier = "==0.2.13" },

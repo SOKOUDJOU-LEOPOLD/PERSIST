@@ -170,6 +170,9 @@ def psnr(gen: np.ndarray, real: np.ndarray) -> float:
 
 
 def voxel_iou(gen_classes: np.ndarray, real_classes: np.ndarray, empty_id: int) -> float:
+    """Binary occupancy IoU: does the generated grid agree with GT on occupied vs empty,
+    ignoring which specific class occupies a cell. See `class_accuracy` for the stricter
+    per-class version (TODO 8: pixel-to-voxel occupancy AND class accuracy table)."""
     gen_occ = gen_classes != empty_id
     real_occ = real_classes != empty_id
     union = np.logical_or(gen_occ, real_occ).sum()
@@ -177,6 +180,14 @@ def voxel_iou(gen_classes: np.ndarray, real_classes: np.ndarray, empty_id: int) 
         return 1.0
     inter = np.logical_and(gen_occ, real_occ).sum()
     return float(inter / union)
+
+
+def class_accuracy(gen_classes: np.ndarray, real_classes: np.ndarray) -> float:
+    """Exact per-voxel class-match rate (argmax class == GT class), over every cell including
+    empty/air -- a stricter complement to `voxel_iou`'s binary occupied-vs-empty agreement.
+    Two grids that agree on occupancy everywhere but disagree on which block type fills each
+    occupied cell would score 1.0 on voxel_iou but less than 1.0 here."""
+    return float((gen_classes == real_classes).mean())
 
 
 def camera_forward_local(camera_6d_rot: torch.Tensor) -> np.ndarray:
@@ -195,6 +206,37 @@ def camera_forward_local(camera_6d_rot: torch.Tensor) -> np.ndarray:
     R = rotation_6d_to_matrix(camera_6d_rot.unsqueeze(0))[0]  # (3, 3), world(voxel-local)-to-camera
     forward_cam = torch.tensor([0.0, 0.0, 1.0])
     return (R.T @ forward_cam).numpy()
+
+
+def plot_camera_trajectory(trajectories: dict, out_path: str) -> None:
+    """Static top-down (x, z) plot of one or more camera paths over a rollout, for visually
+    comparing drift between predicted and ground-truth camera trajectories (TODO 4/5: no such
+    visualization existed anywhere in this repo before this addition).
+
+    Args:
+        trajectories: {label: (T, 10) camera tensor or None}. Position is `camera[:, 6:9]`
+            (`cam_pos_local`, the dataset's own per-timestep camera translation in the voxel
+            grid's local frame -- see `data_loaders/minetest_latent_camera_action_dataset.py:
+            _extract_camera_representation`), plotted as x vs z (the ground plane in this
+            engine's convention). Entries with value None (e.g. Oasis, which has no pose output
+            at all) are skipped, not drawn as empty/flat lines.
+    """
+    fig, ax = plt.subplots(figsize=(3, 3), dpi=80)
+    colors = {"PERSIST": "tab:blue", "PERSIST+w0": "tab:cyan", "WorldMem": "tab:orange", "GT": "black"}
+    for label, camera in trajectories.items():
+        if camera is None:
+            continue
+        pos = camera[:, 6:9].cpu().numpy() if isinstance(camera, torch.Tensor) else camera[:, 6:9]
+        ax.plot(pos[:, 0], pos[:, 2], label=label, color=colors.get(label), linewidth=1.5)
+        ax.scatter([pos[0, 0]], [pos[0, 2]], color=colors.get(label), s=15, marker="o")  # start
+    ax.set_xlabel("x", fontsize=7)
+    ax.set_ylabel("z", fontsize=7)
+    ax.set_title("camera trajectory (top-down)", fontsize=8)
+    ax.legend(fontsize=6, loc="best")
+    ax.set_aspect("equal", adjustable="datalim")
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=80)
+    plt.close(fig)
 
 
 def render_voxel_3d(classes: np.ndarray, empty_id: int, title: str, camera_dir: Optional[np.ndarray] = None) -> np.ndarray:
