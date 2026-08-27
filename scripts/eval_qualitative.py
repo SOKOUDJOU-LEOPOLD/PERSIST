@@ -398,6 +398,13 @@ def main(args: Args):
             "mean_psnr_db": float(np.mean(psnrs)),
             "mean_voxel_iou": float(np.mean(ious)),
             "mean_class_accuracy": float(np.mean(class_accs)),
+            # Per-frame series, for the TODO 5 within-episode artifact-alignment analysis (does a
+            # pixel-quality dip at frame t line up with a voxel-accuracy dip at the same t) --
+            # the original 32-episode run only kept the means above, which can't answer that
+            # question at all (only whether *episodes* correlate, not *frames* within one).
+            "psnr_db": [float(x) for x in psnrs],
+            "voxel_iou": [float(x) for x in ious],
+            "class_accuracy": [float(x) for x in class_accs],
         })
         logger.info(
             f"Episode {ep_idx}: mean PSNR {np.mean(psnrs):.1f}dB, "
