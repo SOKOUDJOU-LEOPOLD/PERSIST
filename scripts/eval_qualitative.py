@@ -33,6 +33,17 @@ New pieces (nothing in the repo does any of this):
     human-viewable 3D render). Rendered at a coarser stride than the pixel video (matplotlib's
     voxel plot is too slow to render every frame of a 150+-frame rollout) and held/repeated to
     stay in sync with the pixel panels.
+  - A camera-accurate "what the camera sees" voxel render (utils/voxel_pov_render.py, reusing
+    the actual rasterizer/camera-matrix chain instead of a schematic isometric view) -- directly
+    comparable to the pixel panels at the same timestep, for spotting whether a pixel-space
+    artifact is also present in the model's own 3D state or is a pixel-decoder-only hallucination.
+  - class_accuracy: exact per-voxel class match rate, complementing the binary occupancy IoU.
+  - A per-episode camera trajectory plot (predicted vs GT top-down path) and, optionally
+    (--export-glb), a .glb export of occupied voxels per rendered frame for interactive
+    inspection in a standard 3D viewer.
+
+Rows now have 7 panels: input frame / gen video / GT video / gen voxels (isometric) / GT voxels
+(isometric) / gen voxels (camera POV) / GT voxels (camera POV).
 
 Example:
     uv run python -m scripts.eval_qualitative \
@@ -68,6 +79,8 @@ from tqdm import tqdm
 from data_loaders.minetest_latent_camera_action_dataset import MinetestLatentCameraActionEval
 from pipelines.pipeline import VoxelFirstPipeline, pipeline_variant_overrides
 from scripts.run_inference import Checkpoints, build_context, resolve_checkpoints, resolve_dataset_root
+from utils.voxel_glb_export import voxel_classes_to_glb
+from utils.voxel_pov_render import render_voxel_pov
 
 
 @dataclass
@@ -108,6 +121,12 @@ class Args:
     mixed_precision: Literal["no", "fp16", "bf16"] = "bf16"
     device: str = "cuda:0"
     output_dir: str = "outputs/qualitative"
+    method_name: str = "PERSIST"
+    """Label used in the camera trajectory plot legend -- set to "PERSIST+w0" when running with
+    --include-initial-voxel-frame, so the two variants' trajectory plots are distinguishable."""
+    export_glb: bool = False
+    """Also export occupied voxels as .glb meshes at the same voxel_render_stride cadence
+    (predicted and GT). Off by default -- real extra disk/time cost, opt-in."""
 
 
 CONTENT_AIR = 126  # gym_envs/craftium/src/mapnode.h:46 -- Craftium/Luanti engine constant.
@@ -320,16 +339,19 @@ def main(args: Args):
 
         input_frame = to_uint8_np(real_pixel[0])
 
-        psnrs, ious = [], []
+        psnrs, ious, class_accs = [], [], []
         voxel_frames_gen, voxel_frames_real = {}, {}
+        pov_frames_gen, pov_frames_real = {}, {}
         frames = []
         for t in range(n):
             gen_f = to_uint8_np(gen_pixel[t])
             real_f = to_uint8_np(real_pixel[t])
             p = psnr(gen_f, real_f)
             iou = voxel_iou(gen_voxel[t], real_voxel[t], empty_class_id)
+            cacc = class_accuracy(gen_voxel[t], real_voxel[t])
             psnrs.append(p)
             ious.append(iou)
+            class_accs.append(cacc)
 
             if t % args.voxel_render_stride == 0:
                 voxel_frames_gen[t] = render_voxel_3d(
@@ -338,6 +360,17 @@ def main(args: Args):
                 voxel_frames_real[t] = render_voxel_3d(
                     real_voxel[t], empty_class_id, "GT VOXELS 3D", camera_forward_local(real_camera[t, :6])
                 )
+                pov_frames_gen[t] = render_voxel_pov(
+                    torch.from_numpy(gen_voxel[t]), gen_camera[t], empty_class_id, args.device
+                )
+                pov_frames_real[t] = render_voxel_pov(
+                    torch.from_numpy(real_voxel[t]), real_camera[t], empty_class_id, args.device
+                )
+                if args.export_glb:
+                    glb_dir = os.path.join(args.output_dir, "glb", f"episode_{ep_idx:02d}")
+                    os.makedirs(glb_dir, exist_ok=True)
+                    voxel_classes_to_glb(gen_voxel[t], empty_class_id, os.path.join(glb_dir, f"gen_t{t:03d}.glb"))
+                    voxel_classes_to_glb(real_voxel[t], empty_class_id, os.path.join(glb_dir, f"gt_t{t:03d}.glb"))
             last_rendered = max(k for k in voxel_frames_gen if k <= t)
 
             h = args.panel_height
@@ -345,21 +378,31 @@ def main(args: Args):
                 resize_panel(input_frame, h),
                 draw_text(resize_panel(gen_f, h), f"gen  PSNR {p:.1f}dB"),
                 resize_panel(real_f, h),
-                draw_text(resize_panel(voxel_frames_gen[last_rendered], h), f"gen voxels  IoU {iou:.2f}"),
+                draw_text(resize_panel(voxel_frames_gen[last_rendered], h), f"gen voxels  IoU {iou:.2f} acc {cacc:.2f}"),
                 resize_panel(voxel_frames_real[last_rendered], h),
+                draw_text(resize_panel(pov_frames_gen[last_rendered], h), "gen voxels POV"),
+                resize_panel(pov_frames_real[last_rendered], h),
             ]
             frames.append(np.concatenate(panels, axis=1))
 
         row_video_path = os.path.join(args.output_dir, f"episode_{ep_idx:02d}.mp4")
         imageio.mimsave(row_video_path, frames, fps=args.fps)
         row_videos.append(frames)
+        plot_camera_trajectory(
+            {args.method_name: gen_camera, "GT": real_camera},
+            os.path.join(args.output_dir, f"episode_{ep_idx:02d}_trajectory.png"),
+        )
         summary.append({
             "episode_index": ep_idx,
             "frames": n,
             "mean_psnr_db": float(np.mean(psnrs)),
             "mean_voxel_iou": float(np.mean(ious)),
+            "mean_class_accuracy": float(np.mean(class_accs)),
         })
-        logger.info(f"Episode {ep_idx}: mean PSNR {np.mean(psnrs):.1f}dB, mean voxel IoU {np.mean(ious):.3f}")
+        logger.info(
+            f"Episode {ep_idx}: mean PSNR {np.mean(psnrs):.1f}dB, "
+            f"mean voxel IoU {np.mean(ious):.3f}, mean class accuracy {np.mean(class_accs):.3f}"
+        )
 
     max_len = max(len(v) for v in row_videos)
     grid_frames = []
