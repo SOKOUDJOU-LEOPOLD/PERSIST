@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import List, Optional
 
 import av
+import imageio
 import numpy as np
 import torch
 import torchvision.transforms as transforms
@@ -127,6 +128,11 @@ class Args:
     output_json: str = "outputs/eval_fvd/worldmem_zeroshot.json"
     method_name: str = "WorldMem"
 
+    save_video_dir: Optional[str] = None
+    """If set, also save each episode's generated video + predicted camera pose trajectory
+    (.npy, (T,5) x/y/z/pitch/yaw from WorldMem's own pose_prediction_model) here -- for the
+    TODO 4 multi-model comparison grid."""
+
 
 def load_worldmem(config_path: str, device: torch.device) -> WorldMemMinecraft:
     cfg = OmegaConf.load(config_path)
@@ -138,9 +144,16 @@ def load_worldmem(config_path: str, device: torch.device) -> WorldMemMinecraft:
 
 
 @torch.no_grad()
-def worldmem_rollout(worldmem: WorldMemMinecraft, seed_frame: np.ndarray, total_frames: int, device, chunk_frames: int) -> torch.Tensor:
+def worldmem_rollout(worldmem: WorldMemMinecraft, seed_frame: np.ndarray, total_frames: int, device, chunk_frames: int):
     """Generate `total_frames` frames from a single image, following the exact init ->
-    generate call sequence validated in worldmem_validate_example.py."""
+    generate call sequence validated in worldmem_validate_example.py.
+
+    Returns (video, poses): video is (T, C, H, W) [0, 255] float; poses is the accumulated
+    (T, 5) [x, y, z, pitch, yaw] trajectory from WorldMem's own pose_prediction_model (see
+    df_video.py:833-838) -- previously computed and discarded like everything else this script
+    used to throw away after FVD feature extraction, now exposed for the TODO 4 camera
+    trajectory plot (WorldMem is one of the few methods here that actually has a pose output;
+    Oasis has none at all)."""
     init_action = np.zeros(25, dtype=np.float32)
     init_pose = np.zeros(5, dtype=np.float32)
 
@@ -166,7 +179,7 @@ def worldmem_rollout(worldmem: WorldMemMinecraft, seed_frame: np.ndarray, total_
         offset += n
 
     out = np.clip(video_frames, 0.0, 1.0) * 255.0
-    return torch.from_numpy(out).float()  # (T, C, H, W), [0, 255]
+    return torch.from_numpy(out).float(), mem_poses  # (T, C, H, W); pose trajectory, shape TBD -- see call site
 
 
 def main(args: Args):
@@ -196,7 +209,7 @@ def main(args: Args):
         with tempfile.TemporaryDirectory() as tmp_dir:
             prompt_png = extract_frame0_png(rgb_path, os.path.join(tmp_dir, "frame0.png"))
             seed_frame = load_image_as_tensor(prompt_png)
-            gen = worldmem_rollout(worldmem, seed_frame, max_frames, device, args.chunk_frames)  # (T, C, H, W)
+            gen, poses = worldmem_rollout(worldmem, seed_frame, max_frames, device, args.chunk_frames)  # (T, C, H, W); pose traj
 
         real, _, _ = read_video(rgb_path, pts_unit="sec")  # (T, H, W, C) uint8
         real = rearrange(real[:max_frames].float(), "t h w c -> t c h w")
@@ -207,6 +220,14 @@ def main(args: Args):
         if n < max_frames:
             logger.warning(f"{level}: only {n} frames available (wanted {max_frames}); truncating.")
         gen, real = gen[:n], real[:n]
+
+        if args.save_video_dir:
+            os.makedirs(args.save_video_dir, exist_ok=True)
+            gen_np = rearrange(gen.clamp(0, 255).byte(), "t c h w -> t h w c").cpu().numpy()
+            imageio.mimsave(os.path.join(args.save_video_dir, f"{level}_gen.mp4"), gen_np, fps=24)
+            poses_np = poses.cpu().numpy() if isinstance(poses, torch.Tensor) else np.asarray(poses)
+            pose_np = poses_np.reshape(poses_np.shape[0], -1)[:, :5]
+            np.save(os.path.join(args.save_video_dir, f"{level}_pose.npy"), pose_np)
 
         for length in args.frame_lengths:
             if gen.shape[0] < length:

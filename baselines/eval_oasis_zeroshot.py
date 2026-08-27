@@ -43,6 +43,8 @@ from pathlib import Path
 from typing import List, Optional
 
 import av
+import imageio
+import numpy as np
 import torch
 import tyro
 from einops import rearrange
@@ -116,6 +118,12 @@ class Args:
 
     output_json: str = "outputs/eval_fvd/oasis_zeroshot.json"
     method_name: str = "Oasis"
+
+    save_video_dir: Optional[str] = None
+    """If set, also save each episode's generated (and, once, real) video as mp4 here -- for the
+    TODO 4 multi-model comparison grid. Off by default: the FVD run doesn't need saved video,
+    only I3D features, and this repo already discards rollout output by default (see this
+    script's own module docstring on why that gap existed in the first place)."""
 
 
 def load_oasis(oasis_ckpt: str, vae_ckpt: str):
@@ -236,6 +244,11 @@ def main(args: Args):
         if n < max_frames:
             logger.warning(f"{level}: only {n} frames available (wanted {max_frames}); truncating.")
         gen, real = gen[:n], real[:n]
+
+        if args.save_video_dir:
+            os.makedirs(args.save_video_dir, exist_ok=True)
+            gen_np = rearrange(gen.clamp(0, 255).byte(), "t c h w -> t h w c").numpy()
+            imageio.mimsave(os.path.join(args.save_video_dir, f"{level}_gen.mp4"), gen_np, fps=24)
 
         for length in args.frame_lengths:
             if gen.shape[0] < length:
