@@ -44,7 +44,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "WorldMem"))
 
 from finetune_worldmem_data import CraftiumWorldMemDataset  # noqa: E402
-from craftium_action_features import CRAFTIUM_ACTION_DIM_ENRICHED  # noqa: E402
+from craftium_action_features import (  # noqa: E402
+    CRAFTIUM_ACTION_DIM_ENRICHED,
+    CRAFTIUM_ACTION_DIM_WORLDMEM_NATIVE,
+    WORLDMEM_NATIVE_INFORMED_INIT_ACTION_MAP,
+)
 
 CRAFTIUM_ACTION_DIM = 23
 
@@ -112,6 +116,12 @@ def load_worldmem_for_finetuning(
     (hidden, in_features), so one column = one input dimension's learned projection), and copy the
     bias directly (shape (hidden,), independent of input dim). Every other column stays
     zero-initialized exactly as before.
+
+    informed_init_map: defaults to INFORMED_INIT_ACTION_MAP (the 23-dim bespoke-append layout's
+    6-entry map). Pass WORLDMEM_NATIVE_INFORMED_INIT_ACTION_MAP instead when action_dim ==
+    CRAFTIUM_ACTION_DIM_WORLDMEM_NATIVE (that map is an identity map -- source and destination
+    columns already coincide, since augment_actions_to_worldmem_native_layout places every value
+    directly in WorldMem's own ACTION_KEYS column position).
 
     Trade-off worth knowing: this breaks GatedActionEmbed's "output is exactly 0 at step 0"
     property for whichever mapped actions are active on frame 0 (movement keys are pressed on most
@@ -211,7 +221,17 @@ class Args:
     clean, near-exact fixed-magnitude signal (measured 6.40 deg/step) unlike Craftium's raw
     boolean camera flags, which map to a variable real turn amount (see
     craftium_action_features.py and docs/action_space_empirical_report.md). Action dim becomes 25
-    instead of 23 when enabled."""
+    instead of 23 when enabled. Mutually exclusive with use_worldmem_native_action_layout."""
+    use_worldmem_native_action_layout: bool = False
+    """If set, reconstructs Craftium's action directly into WorldMem's OWN 25-slot ACTION_KEYS
+    column layout (augment_actions_to_worldmem_native_layout) instead of appending 2 bespoke
+    columns after Craftium's raw 23 -- matches the exact column semantics the pretrained
+    checkpoint's action-conditioning weights were trained against (see
+    craftium_action_features.py's module-level mapping table and
+    WORLDMEM_NATIVE_INFORMED_INIT_ACTION_MAP). Mutually exclusive with use_clean_camera_features.
+    Per the Hypothesis A finding (single-seed causality verdicts are unreliable measurement noise,
+    not a real training-dynamics signal -- see eval_worldmem_pose_causality_cleancam.py), any
+    future evaluation of this layout must use --num-seeds >= 5, not a single seed."""
     lr_adaln: float = 1e-5
     lr_new_layer: float = 1e-4
     lr_pretrained: float = 1e-6
@@ -246,6 +266,10 @@ class Args:
 
 
 def main(args: Args):
+    assert not (args.use_clean_camera_features and args.use_worldmem_native_action_layout), (
+        "use_clean_camera_features and use_worldmem_native_action_layout are mutually exclusive "
+        "action-layout choices -- pick one."
+    )
     torch.manual_seed(args.seed)
     device = args.device
     os.makedirs(args.output_dir, exist_ok=True)
@@ -253,6 +277,9 @@ def main(args: Args):
     if args.use_clean_camera_features:
         action_dim = CRAFTIUM_ACTION_DIM_ENRICHED
         informed_init_map = INFORMED_INIT_ACTION_MAP
+    elif args.use_worldmem_native_action_layout:
+        action_dim = CRAFTIUM_ACTION_DIM_WORLDMEM_NATIVE
+        informed_init_map = WORLDMEM_NATIVE_INFORMED_INIT_ACTION_MAP
     else:
         action_dim = CRAFTIUM_ACTION_DIM
         informed_init_map = INFORMED_INIT_ACTION_MAP
@@ -271,6 +298,7 @@ def main(args: Args):
     dataset = CraftiumWorldMemDataset(
         args.split_path, "train", n_frames=args.n_frames, memory_condition_length=args.memory_condition_length,
         seed=args.seed, use_clean_camera_features=args.use_clean_camera_features,
+        use_worldmem_native_action_layout=args.use_worldmem_native_action_layout,
     )
     loader = DataLoader(
         dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, drop_last=True
