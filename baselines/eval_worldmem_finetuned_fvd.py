@@ -1,12 +1,17 @@
-"""FVD for a fine-tuned (or untrained-surgery) WorldMem checkpoint, real Craftium seed frame +
-real actions + real ground-truth poses per episode, on either the 236-episode train split or the
-20-episode held-out test split from outputs/finetune_split.json.
+"""FVD + PSNR for a fine-tuned (or untrained-surgery) WorldMem checkpoint, real Craftium seed
+frame + real actions + real ground-truth poses per episode, on either the 236-episode train
+split or the 20-episode held-out test split from outputs/finetune_split.json.
 
-Protocol matches eval_oasis_finetuned_fvd.py exactly (itself matching eval_oasis_zeroshot.py /
-eval_worldmem_zeroshot.py's own pattern), for the same three-way comparison already run for
-Oasis: ONE rollout per episode at max_frames=max(frame_lengths)=600, then FVD computed three
-times by truncating that same rollout + the same real GT video to [200, 400, 600] frames each --
-not three separate generations.
+FVD protocol matches eval_oasis_finetuned_fvd.py exactly (itself matching
+eval_oasis_zeroshot.py / eval_worldmem_zeroshot.py's own pattern), for the same three-way
+comparison already run for Oasis: ONE rollout per episode at max_frames=max(frame_lengths)=600,
+then FVD computed three times by truncating that same rollout + the same real GT video to
+[200, 400, 600] frames each -- not three separate generations.
+
+PSNR is computed from that SAME rollout (no extra generation cost), same formula and same
+"real-action-driven checkpoints only" caveat as eval_oasis_finetuned_fvd.py -- see that file's
+docstring for the reasoning (PSNR needs frame-by-frame trajectory correspondence, which only
+holds when the model is actually driven by the real recorded actions).
 
 Generation goes through `validation_step()` via `build_worldmem_shell`/`load_single_episode_batch`
 (baselines/finetune_worldmem_generate.py) -- including that function's `chunk_size=n_tokens`
@@ -78,6 +83,15 @@ class Args:
     seed: int = 0
 
 
+def psnr(gen: np.ndarray, real: np.ndarray) -> float:
+    """Verbatim copy of scripts/eval_qualitative.py's psnr() / eval_oasis_finetuned_fvd.py's own
+    copy -- same formula, same 99.0 cap for a near-perfect match (avoids log(0))."""
+    mse = np.mean((gen.astype(np.float32) - real.astype(np.float32)) ** 2)
+    if mse < 1e-10:
+        return 99.0
+    return float(10 * np.log10(255.0**2 / mse))
+
+
 def read_full_video(path: str) -> np.ndarray:
     container = av.open(path)
     frames = [f.to_ndarray(format="rgb24") for f in container.decode(container.streams.video[0])]
@@ -143,6 +157,7 @@ def main(args: Args):
 
     local_real_feats = {length: [] for length in args.frame_lengths}
     local_gen_feats = {length: [] for length in args.frame_lengths}
+    psnr_values = {length: [] for length in args.frame_lengths}
 
     t0 = time.time()
     for idx, level_id in enumerate(level_ids):
@@ -159,6 +174,12 @@ def main(args: Args):
             print(f"WARNING: {level_id}: only {n} frames available (wanted {max_frames}); truncating.")
         gen_t, real = gen_t[:n], real[:n]
 
+        # PSNR is per-frame, computed once on the full-length rollout and sliced per
+        # frame_length afterward -- same pattern as eval_oasis_finetuned_fvd.py.
+        gen_np = gen_t.permute(0, 2, 3, 1).numpy()  # (n, H, W, 3), 0-255 float
+        real_np = real.permute(0, 2, 3, 1).numpy()
+        per_frame_psnr = [psnr(gen_np[t], real_np[t]) for t in range(gen_np.shape[0])]
+
         for length in args.frame_lengths:
             if gen_t.shape[0] < length:
                 continue
@@ -170,6 +191,7 @@ def main(args: Args):
             local_real_feats[length].append(
                 extract_i3d_features(real_clips, i3d, device=args.device, batch_size=args.i3d_batch_size)
             )
+            psnr_values[length].extend(per_frame_psnr[:length])
 
         elapsed = time.time() - t0
         print(f"[{idx+1}/{len(level_ids)}] {level_id} done ({elapsed:.1f}s elapsed, "
@@ -189,6 +211,12 @@ def main(args: Args):
         fvd_by_length[length] = fvd
         print(f"FVD @ {length} frames: {fvd:.4f} ({real_feats.shape[0]} real / {gen_feats.shape[0]} generated clips)")
 
+    psnr_by_length = {}
+    for length in sorted(args.frame_lengths):
+        mean_psnr = float(np.mean(psnr_values[length])) if psnr_values[length] else 0.0
+        psnr_by_length[length] = mean_psnr
+        print(f"PSNR @ {length} frames: {mean_psnr:.2f}dB ({len(psnr_values[length])} frames pooled)")
+
     elapsed = time.time() - t0
     result = {
         "method": "WorldMem (fine-tuned, 23-dim Craftium actions, real-action-driven)",
@@ -198,6 +226,7 @@ def main(args: Args):
         "num_episodes": len(level_ids),
         "frame_lengths": args.frame_lengths,
         "fvd": fvd_by_length,
+        "psnr_db": psnr_by_length,
         "device": torch.cuda.get_device_name(args.device),
         "wall_clock_seconds": elapsed,
     }
