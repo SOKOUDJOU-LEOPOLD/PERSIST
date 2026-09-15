@@ -23,6 +23,22 @@ derived from real player_yaw/pitch, shuffling/zeroing pose_conditions no longer 
 pose-correlated signal from the model's inputs -- the action channel now also carries a truthful
 camera-delta signal. This is exactly what --ablate action is designed to probe directly, rather
 than just caveat around.
+
+--action-layout {bespoke,native}: selects WHICH of the two action reconstructions this checkpoint
+was trained with, and therefore which columns actually carry camera information for --ablate
+action to touch. This matters a lot: the two layouts put camera info in DIFFERENT columns of the
+same 25-wide vector, and getting it wrong makes --ablate action a silent no-op rather than an
+error.
+    "bespoke" (the original craftium_action_features.augment_actions_with_camera_features):
+        raw 23-dim Craftium action + 2 appended columns [23]=yaw_delta, [24]=pitch_delta
+        (real degree magnitudes). Camera-ablation columns: [23, 24].
+    "native" (augment_actions_to_worldmem_native_layout): Craftium's action reconstructed
+        directly into WorldMem's own ACTION_KEYS column layout -- camera lives at [15]=cameraY,
+        [16]=cameraX (sign-only, {-1,0,1}), and columns [23]/[24] (pickItem/drop) are provably
+        always exactly 0 in this layout. Camera-ablation columns: [15, 16].
+Running --ablate action with the wrong --action-layout against a "native" checkpoint would shuffle
+columns [23,24], which are always-zero dead columns in that layout -- a no-op that would misreport
+"the action channel has no causal effect" for a reason that has nothing to do with the model.
 """
 import os
 import sys
@@ -37,11 +53,27 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "Wor
 
 from finetune_worldmem import CRAFTIUM_ACTION_DIM, GatedActionEmbed  # noqa: E402
 from finetune_worldmem_data import DATASET_ROOT, normalize_pose, pitch_yaw_from_cam_dir  # noqa: E402
-from craftium_action_features import CRAFTIUM_ACTION_DIM_ENRICHED, augment_actions_with_camera_features  # noqa: E402
+from craftium_action_features import (  # noqa: E402
+    CRAFTIUM_ACTION_DIM_ENRICHED,
+    CRAFTIUM_ACTION_DIM_WORLDMEM_NATIVE,
+    augment_actions_with_camera_features,
+    augment_actions_to_worldmem_native_layout,
+)
 
-# Column indices of the 2 camera-delta features within the 25-dim enriched action vector --
-# see craftium_action_features.py's augment_actions_with_camera_features docstring.
-CAMERA_DELTA_COLUMNS = [23, 24]
+# Column indices carrying camera information, per action layout -- see module docstring's
+# --action-layout section for the full derivation of why these differ.
+CAMERA_COLUMNS_BY_LAYOUT = {
+    "bespoke": [23, 24],   # yaw_delta, pitch_delta (raw degree magnitudes)
+    "native": [15, 16],    # cameraY, cameraX (sign-only, {-1,0,1})
+}
+ACTION_DIM_BY_LAYOUT = {
+    "bespoke": CRAFTIUM_ACTION_DIM_ENRICHED,
+    "native": CRAFTIUM_ACTION_DIM_WORLDMEM_NATIVE,
+}
+CONVERTER_BY_LAYOUT = {
+    "bespoke": augment_actions_with_camera_features,
+    "native": augment_actions_to_worldmem_native_layout,
+}
 
 
 def build_worldmem_shell_enriched(config_path: str, device: str, action_dim: int):
@@ -61,13 +93,21 @@ def build_worldmem_shell_enriched(config_path: str, device: str, action_dim: int
     return worldmem.to(device)
 
 
-def load_episode_batch_enriched(dataset_root, level_id, num_frames, memory_condition_length, seed):
+def load_episode_batch_enriched(dataset_root, level_id, num_frames, memory_condition_length, seed, action_layout,
+                                 start_frame=0):
+    """start_frame: shifts the whole window to begin at episode frame `start_frame` instead of 0
+    (memory frames also shift to all point at `start_frame`, the same "no real past yet" degenerate
+    case the start=0 default already uses -- just relocated). Lets a diagnostic put a specific
+    episode segment (e.g. a segment that stalled deep in a long rollout) only a few autoregressive
+    steps into a FRESH rollout, to separate "this episode position is inherently hard" from "this
+    many autoregressive steps of accumulated drift is inherently hard" -- see
+    generate_native_grid.py's --start-frame."""
     import av
 
     level_dir = os.path.join(dataset_root, level_id)
     npz = np.load(os.path.join(level_dir, "data.npz"))
-    current_idx = list(range(num_frames))
-    memory_idx = [0] * memory_condition_length
+    current_idx = list(range(start_frame, start_frame + num_frames))
+    memory_idx = [start_frame] * memory_condition_length
     all_idx = current_idx + memory_idx
 
     wanted = set(all_idx)
@@ -83,7 +123,8 @@ def load_episode_batch_enriched(dataset_root, level_id, num_frames, memory_condi
     video = torch.from_numpy(frames).float() / 255.0
     video = video.permute(0, 3, 1, 2).contiguous()
 
-    enriched_actions = augment_actions_with_camera_features(npz["action"], npz["player_yaw"], npz["player_pitch"])
+    converter = CONVERTER_BY_LAYOUT[action_layout]
+    enriched_actions = converter(npz["action"], npz["player_yaw"], npz["player_pitch"])
     actions = torch.from_numpy(enriched_actions[all_idx].astype(np.float32))
 
     pos = npz["player_pos"][all_idx].astype(np.float64)
@@ -108,9 +149,13 @@ def to_np(x):
     return x.permute(0, 2, 3, 1).byte().cpu().numpy()
 
 
-def run_one_seed(worldmem, video, actions, poses, timestamp, seed, device, ablate):
+def run_one_seed(worldmem, video, actions, poses, timestamp, seed, device, ablate, camera_columns):
     """Runs the real/shuffled/zero measurement once, for a given seed and ablation target.
-    Returns {"real": psnr, "shuffled": psnr, "zero": psnr}."""
+    Returns {"real": psnr, "shuffled": psnr, "zero": psnr}.
+
+    camera_columns: which action columns actually carry camera info for --ablate action -- see
+    CAMERA_COLUMNS_BY_LAYOUT / module docstring. Must match the checkpoint's own action layout or
+    this ablates dead, always-zero columns instead of the real camera signal."""
     torch.manual_seed(seed)
     rng = torch.Generator().manual_seed(seed)
     n_frames = poses.shape[1]
@@ -121,13 +166,14 @@ def run_one_seed(worldmem, video, actions, poses, timestamp, seed, device, ablat
         shuffled_actions, shuffled_poses = actions, poses[:, perm].clone()
         zero_actions, zero_poses = actions, torch.zeros_like(poses)
     elif ablate == "action":
-        # Column-scoped: only vary the 2 camera-delta columns, leave 0-22 and poses untouched.
+        # Column-scoped: only vary the camera columns for this layout, leave everything else
+        # (movement/hotbar columns and poses) untouched.
         real_actions, real_poses = actions, poses
         shuffled_actions = actions.clone()
-        shuffled_actions[:, :, CAMERA_DELTA_COLUMNS] = actions[:, perm][:, :, CAMERA_DELTA_COLUMNS]
+        shuffled_actions[:, :, camera_columns] = actions[:, perm][:, :, camera_columns]
         shuffled_poses = poses
         zero_actions = actions.clone()
-        zero_actions[:, :, CAMERA_DELTA_COLUMNS] = 0.0
+        zero_actions[:, :, camera_columns] = 0.0
         zero_poses = poses
     else:
         raise ValueError(f"unknown ablate target: {ablate}")
@@ -168,18 +214,30 @@ def main():
         (single-rollout measurement noise)."""
         ablate: Literal["pose", "action"] = "pose"
         """"pose" (default, unchanged): vary the pose tensor real/shuffled/zero, actions fixed.
-        "action": vary ONLY the 2 camera-delta action columns (23-24) real/shuffled/zero, pose and
-        all other action columns fixed -- targets Hypothesis B (channel competition)."""
+        "action": vary ONLY this checkpoint's camera columns (see --action-layout) real/shuffled/
+        zero, pose and all other action columns fixed -- targets Hypothesis B (channel
+        competition)."""
+        action_layout: Literal["bespoke", "native"] = "bespoke"
+        """Which action reconstruction THIS CHECKPOINT was fine-tuned with -- selects both how raw
+        Craftium actions are converted for this eval AND which columns --ablate action touches.
+        "bespoke": the original 23-raw+2-appended (yaw_delta,pitch_delta) layout, camera at
+        columns [23,24]. "native": Craftium reconstructed into WorldMem's own ACTION_KEYS layout,
+        camera (sign-only cameraY/cameraX) at columns [15,16]. Must match how the checkpoint was
+        trained (use_clean_camera_features vs use_worldmem_native_action_layout in
+        finetune_worldmem.py) -- using the wrong one silently evaluates the wrong columns."""
 
     args = tyro.cli(Args)
     device = args.device
+    action_dim = ACTION_DIM_BY_LAYOUT[args.action_layout]
+    camera_columns = CAMERA_COLUMNS_BY_LAYOUT[args.action_layout]
 
-    worldmem = build_worldmem_shell_enriched(args.config_path, device, CRAFTIUM_ACTION_DIM_ENRICHED)
+    worldmem = build_worldmem_shell_enriched(args.config_path, device, action_dim)
     ckpt = torch.load(args.ckpt_path, map_location="cpu", weights_only=False)
     worldmem.diffusion_model.load_state_dict(ckpt["model"])
     worldmem.diffusion_model.eval()
     print(f"Loaded checkpoint at step={ckpt.get('step')} from {args.ckpt_path}")
-    print(f"ablate={args.ablate}, num_seeds={args.num_seeds}")
+    print(f"ablate={args.ablate}, num_seeds={args.num_seeds}, action_layout={args.action_layout}, "
+          f"camera_columns={camera_columns}")
 
     from huggingface_hub import hf_hub_download
     cfg = OmegaConf.load(args.config_path)
@@ -190,7 +248,8 @@ def main():
     worldmem.vae.load_state_dict(vae_ckpt["state_dict"] if "state_dict" in vae_ckpt else vae_ckpt, strict=True)
 
     video, actions, poses, timestamp = load_episode_batch_enriched(
-        args.dataset_root, args.level_id, args.num_frames, args.memory_condition_length, args.seed
+        args.dataset_root, args.level_id, args.num_frames, args.memory_condition_length, args.seed,
+        args.action_layout,
     )
     video, actions, poses, timestamp = (
         video.to(device), actions.to(device), poses.to(device), timestamp.to(device)
@@ -199,7 +258,7 @@ def main():
     per_seed_results = []
     for s in range(args.num_seeds):
         seed = args.seed + s
-        results = run_one_seed(worldmem, video, actions, poses, timestamp, seed, device, args.ablate)
+        results = run_one_seed(worldmem, video, actions, poses, timestamp, seed, device, args.ablate, camera_columns)
         clean = results["real"] > results["shuffled"] > results["zero"]
         per_seed_results.append(results)
         print(f"[seed {seed}] real={results['real']:.2f}dB shuffled={results['shuffled']:.2f}dB "
@@ -211,7 +270,8 @@ def main():
     n_clean = sum(r["real"] > r["shuffled"] > r["zero"] for r in per_seed_results)
 
     print()
-    print(f"=== Summary: {args.level_id}, ablate={args.ablate}, {args.num_seeds} seed(s) ===")
+    print(f"=== Summary: {args.level_id}, ablate={args.ablate}, action_layout={args.action_layout}, "
+          f"{args.num_seeds} seed(s) ===")
     print(f"  real:     mean={reals.mean():.2f}dB  std={reals.std():.2f}dB")
     print(f"  shuffled: mean={shuffleds.mean():.2f}dB  std={shuffleds.std():.2f}dB")
     print(f"  zero:     mean={zeros.mean():.2f}dB  std={zeros.std():.2f}dB")
