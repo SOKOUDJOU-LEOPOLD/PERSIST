@@ -46,24 +46,41 @@ CRAFTIUM_ACTION_DIM = 23
 class GatedActionEmbed(torch.nn.Module):
     """Drop-in replacement for DiT's plain `nn.Linear(action_dim, hidden_size)` external_cond
     layer: same call signature (`self(action) -> (..., hidden_size)`), but the output is scaled
-    by a learnable, zero-initialized scalar gate before being returned. Since dit.py's forward
-    does `c += self.external_cond(external_cond)` unconditionally, this needs no changes to
-    dit.py at all -- it's substituted in after construction (see load_oasis_for_finetuning).
+    by a learnable scalar gate before being returned. Since dit.py's forward does
+    `c += self.external_cond(external_cond)` unconditionally, this needs no changes to dit.py at
+    all -- it's substituted in after construction (see load_oasis_for_finetuning).
 
     Motivation: even with a zero-initialized linear layer, once trained its raw output is added
     into `c` completely unscaled -- nothing stops training from growing that contribution to a
     magnitude that measurably shifts the shared conditioning signal for EVERY frame, degrading
     base visual fidelity even while the action-following objective improves (this is the
     hypothesized cause of the color/lighting drift seen in every fine-tuning attempt so far). A
-    learnable gate lets the model control the action signal's magnitude explicitly and gradually,
-    the same "zero-init gate" idea already used elsewhere in this project family (see
-    baselines/WorldMem/experiments/exp_base.py's zero_init_gate option) but applied as an
-    explicit multiplicative control rather than just a zero starting point."""
+    learnable gate lets the model control the action signal's magnitude explicitly and gradually.
+
+    BUG FIX (found by directly loading trained checkpoints and confirming, empirically, that
+    `external_cond`'s output was byte-identical for real/random/zero actions after thousands of
+    training steps -- i.e. the action-conditioning pathway had never received a single nonzero
+    gradient, in every fine-tuning run so far): the gate previously started at exactly 0, matching
+    `linear`'s own zero-initialized weight/bias. Output = `gate * (W @ action + b)` is a PRODUCT of
+    two independently zero-initialized learnable quantities, and by the product rule, the gradient
+    w.r.t. either factor is proportional to the OTHER factor -- so with both at exactly 0, every
+    gradient (`d(gate)`, `d(W)`, `d(b)`) is exactly 0, forever; this is a permanent fixed point
+    under gradient descent, not something more training steps can escape. The referenced
+    `zero_init_gate` option in `baselines/WorldMem/experiments/exp_base.py` does NOT have this
+    problem -- it zeros a slice of a weight matrix whose *input* (a conditioning embedding) is
+    never itself zero, so that gate's gradient is nonzero from step 1. This class's gate, by
+    contrast, multiplied a branch whose input (`linear`'s raw output) was ALSO forced to zero --
+    the two zero-inits were never safe to combine. Fix: initialize `gate` to a nonzero value while
+    keeping `linear` zero-initialized. Output at step 0 is still exactly 0 (since `linear`'s output
+    is exactly 0, `0 * gate == 0` for any `gate`), so the "no initial perturbation to the pretrained
+    model" property is preserved -- but now `d(loss)/d(linear.weight) = gate * action != 0`, so
+    `linear` can start learning from the very first gradient step, and once it does, `gate`'s own
+    gradient (`d(loss)/d(gate) = linear(action)`) becomes nonzero too."""
 
     def __init__(self, action_dim: int, hidden_size: int):
         super().__init__()
         self.linear = torch.nn.Linear(action_dim, hidden_size)
-        self.gate = torch.nn.Parameter(torch.zeros(1))
+        self.gate = torch.nn.Parameter(torch.ones(1))
 
     def forward(self, action):
         return self.linear(action) * self.gate

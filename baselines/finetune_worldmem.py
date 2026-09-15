@@ -50,14 +50,27 @@ CRAFTIUM_ACTION_DIM = 23
 
 class GatedActionEmbed(torch.nn.Module):
     """Same idea as finetune_oasis.py's GatedActionEmbed: drop-in replacement for the plain
-    `nn.Linear(action_cond_dim, hidden_size)` external_cond layer, with a learnable,
-    zero-initialized scalar gate controlling the action signal's overall magnitude before it's
-    added into the shared conditioning vector `c`."""
+    `nn.Linear(action_cond_dim, hidden_size)` external_cond layer, with a learnable scalar gate
+    controlling the action signal's overall magnitude before it's added into the shared
+    conditioning vector `c`.
+
+    BUG FIX (see finetune_oasis.py's GatedActionEmbed docstring for the full derivation and the
+    empirical confirmation -- loading trained checkpoints directly and finding `external_cond`'s
+    output byte-identical for real/random/zero actions after thousands of steps, in every
+    fine-tuning run of both models): `gate` previously started at exactly 0, matching `linear`'s
+    own zero-initialized weight/bias. `output = gate * (W @ action + b)` is a product of two
+    independently zero-initialized learnable quantities, so by the product rule every gradient
+    (`d(gate)`, `d(W)`, `d(b)`) is exactly 0 at that point -- a permanent fixed point, not
+    something more training fixes. Fix: initialize `gate` to a nonzero value while keeping
+    `linear` zero-initialized -- output at step 0 is still exactly 0 (`linear`'s output is 0, so
+    `0 * gate == 0` regardless of `gate`), preserving "no initial perturbation," but now
+    `d(loss)/d(linear.weight) = gate * action != 0`, so `linear` can start learning immediately,
+    and `gate`'s own gradient becomes nonzero as soon as it does."""
 
     def __init__(self, action_dim: int, hidden_size: int):
         super().__init__()
         self.linear = torch.nn.Linear(action_dim, hidden_size)
-        self.gate = torch.nn.Parameter(torch.zeros(1))
+        self.gate = torch.nn.Parameter(torch.ones(1))
 
     def forward(self, action):
         return self.linear(action) * self.gate
