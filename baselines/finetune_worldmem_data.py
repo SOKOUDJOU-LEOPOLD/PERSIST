@@ -154,7 +154,12 @@ class CraftiumWorldMemDataset(Dataset):
         memory_condition_length: int = 8,
         dataset_root: str = DATASET_ROOT,
         seed: int = 0,
+        use_clean_camera_features: bool = False,
     ):
+        """use_clean_camera_features: if set, concatenates 2 extra action columns (yaw_delta,
+        pitch_delta) derived from player_yaw/player_pitch -- see craftium_action_features.py for
+        the full derivation. Actions become (T, 25) instead of (T, 23) when enabled; the model's
+        action_cond_dim must be set to match (see finetune_worldmem.py)."""
         self.n_frames = n_frames
         self.memory_condition_length = memory_condition_length
         self.dataset_root = dataset_root
@@ -162,6 +167,7 @@ class CraftiumWorldMemDataset(Dataset):
         self.frames_per_episode = 600
         self.windows_per_episode = self.frames_per_episode // n_frames
         self._seed = seed
+        self.use_clean_camera_features = use_clean_camera_features
 
     def __len__(self) -> int:
         return len(self.level_ids) * self.windows_per_episode
@@ -191,8 +197,18 @@ class CraftiumWorldMemDataset(Dataset):
 
         # Every numeric literal below (num_samples, radius, the two FOV half-angles, the -0.2
         # recency weight) is copied verbatim from _generate_condition_indices -- these describe a
-        # camera's field of view and a fixed search radius, not anything Craftium-specific, so
-        # there is nothing here to recalibrate (unlike the old pos_range/angle_range approach).
+        # camera's field of view and a fixed search radius, not anything Craftium-specific.
+        #
+        # REVERTED (was briefly rescaled to 1.5): a diagnostic over all 236 Craftium fine-tuning
+        # episodes found mean camera displacement over a 30-frame span is only ~0.88 units, making
+        # radius=30 leave the position term little signal to select on -- a plausible-sounding
+        # theory that turned out empirically WRONG. A full re-fine-tune with radius=1.5 baked into
+        # this training-time selection (outputs/overfit_worldmem_level_006_radiusfix) produced a
+        # WORSE, inverted causality ordering (real=14.51/shuffled=13.62/zero=16.52dB) than the
+        # original radius=30 baseline (real=16.26/shuffled=12.28/zero=10.89dB) -- see
+        # docs/action_space_empirical_report.md and the session's radius-fix ablation results.
+        # Reverted to the original 30 to keep train/inference consistent with df_video.py's own
+        # (pristine, unmodified) _generate_condition_indices.
         num_samples = 10000
         radius = 30
         points = generate_points_in_sphere(num_samples, radius)[:, None, :]  # (N, 1, 3)
@@ -259,7 +275,14 @@ class CraftiumWorldMemDataset(Dataset):
         video = torch.from_numpy(frames).float() / 255.0  # (T, H, W, 3)
         video = video.permute(0, 3, 1, 2).contiguous()  # (T, 3, H, W)
 
-        actions = torch.from_numpy(npz["action"][all_idx].astype(np.float32))  # (T, 23)
+        if self.use_clean_camera_features:
+            from craftium_action_features import augment_actions_with_camera_features
+            action_pool = augment_actions_with_camera_features(
+                npz["action"], npz["player_yaw"], npz["player_pitch"]
+            )  # (600, 25)
+        else:
+            action_pool = npz["action"].astype(np.float32)  # (600, 23)
+        actions = torch.from_numpy(action_pool[all_idx])  # (T, 23) or (T, 25)
 
         poses_all = np.concatenate([poses_window, poses_pool[memory_idx]], axis=0).astype(np.float32)
         poses = torch.from_numpy(poses_all)
