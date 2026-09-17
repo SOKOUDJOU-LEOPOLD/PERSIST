@@ -39,6 +39,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "open-oasis"))
 
 from finetune_oasis_data import CraftiumOasisDataset  # noqa: E402
+from craftium_action_features import (  # noqa: E402
+    CRAFTIUM_ACTION_DIM_OASIS_NATIVE,
+    OASIS_NATIVE_INFORMED_INIT_ACTION_MAP,
+)
 
 CRAFTIUM_ACTION_DIM = 23
 
@@ -86,20 +90,20 @@ class GatedActionEmbed(torch.nn.Module):
         return self.linear(action) * self.gate
 
 
-def build_dit_architecture(gated_action: bool = True, zero_init_action_layer: bool = True):
-    """Construct the 23-dim-action DiT architecture only (no checkpoint weights loaded) --
-    shared by load_oasis_for_finetuning (training) and every generation/eval script that needs to
-    load one of our own fine-tuned checkpoints, so the architecture (in particular, whether
-    external_cond is a plain nn.Linear or a GatedActionEmbed) always matches whatever the
+def build_dit_architecture(gated_action: bool = True, zero_init_action_layer: bool = True, action_dim: int = CRAFTIUM_ACTION_DIM):
+    """Construct the action DiT architecture only (no checkpoint weights loaded) -- shared by
+    load_oasis_for_finetuning (training) and every generation/eval script that needs to load one
+    of our own fine-tuned checkpoints, so the architecture (in particular, whether external_cond
+    is a plain nn.Linear or a GatedActionEmbed, and its action_dim) always matches whatever the
     checkpoint being loaded was actually saved with."""
     from dit import DiT
 
-    model = DiT(patch_size=2, hidden_size=1024, depth=16, num_heads=16, external_cond_dim=CRAFTIUM_ACTION_DIM)
+    model = DiT(patch_size=2, hidden_size=1024, depth=16, num_heads=16, external_cond_dim=action_dim)
     if zero_init_action_layer:
         torch.nn.init.zeros_(model.external_cond.weight)
         torch.nn.init.zeros_(model.external_cond.bias)
     if gated_action:
-        gated = GatedActionEmbed(CRAFTIUM_ACTION_DIM, model.external_cond.out_features)
+        gated = GatedActionEmbed(action_dim, model.external_cond.out_features)
         gated.linear.weight.data.copy_(model.external_cond.weight.data)
         gated.linear.bias.data.copy_(model.external_cond.bias.data)
         model.external_cond = gated
@@ -124,15 +128,22 @@ def load_finetuned_dit(ckpt_path: str, device: str):
     ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
     state_dict = ckpt["model"]
     gated_action = "external_cond.gate" in state_dict
-    model = build_dit_architecture(gated_action=gated_action)
+    # action_dim inferred directly from the saved weight's own shape (in_features), rather than
+    # from the checkpoint's args dict, so this stays correct even for checkpoints saved before
+    # any given action-layout flag existed at all.
+    weight_key = "external_cond.linear.weight" if gated_action else "external_cond.weight"
+    action_dim = state_dict[weight_key].shape[1]
+    model = build_dit_architecture(gated_action=gated_action, action_dim=action_dim)
     model.load_state_dict(state_dict)
     return model.to(device).eval(), ckpt.get("step")
 
 
 def load_oasis_for_finetuning(
     oasis_ckpt: str, vae_ckpt: str, device: str, zero_init_action_layer: bool = True, gated_action: bool = True,
+    action_dim: int = CRAFTIUM_ACTION_DIM, informed_action_init: bool = False,
+    informed_init_map: dict = None,
 ):
-    """Load Oasis's DiT with a freshly-initialized 23-dim action layer, everything else from the
+    """Load Oasis's DiT with a freshly-initialized action layer, everything else from the
     pretrained checkpoint. See module docstring / the plan's "model surgery" step.
 
     `zero_init_action_layer`: zero-initializes the new layer's weight AND bias (rather than
@@ -143,13 +154,54 @@ def load_oasis_for_finetuning(
 
     `gated_action`: wraps the action layer in GatedActionEmbed (see above) instead of a plain
     nn.Linear -- adds an explicit, learnable, zero-initialized scalar controlling the action
-    signal's overall magnitude, on top of zero_init_action_layer's per-weight zero-init."""
+    signal's overall magnitude, on top of zero_init_action_layer's per-weight zero-init.
+
+    `informed_action_init`: instead of leaving the new action layer entirely zero-initialized,
+    copy the pretrained 25-dim checkpoint's own weight COLUMNS for the dims in `informed_init_map`
+    (source idx -> pretrained idx) into the corresponding new columns. Meaningful for
+    `action_dim=CRAFTIUM_ACTION_DIM_OASIS_NATIVE` (native layout, `informed_init_map` defaults to
+    `OASIS_NATIVE_INFORMED_INIT_ACTION_MAP`, an identity map since native-layout columns already
+    coincide with Oasis's own) -- not meaningful for the plain 23-dim bespoke layout, which has no
+    established mapping to Oasis's own column semantics at all."""
     from vae import VAE_models
 
-    model = build_dit_architecture(gated_action=gated_action, zero_init_action_layer=zero_init_action_layer)
+    if informed_init_map is None:
+        informed_init_map = OASIS_NATIVE_INFORMED_INIT_ACTION_MAP
+
+    # Built WITHOUT gating first (gated_action=False here regardless of the caller's setting) so
+    # informed_action_init below can act on a plain nn.Linear's .weight/.bias directly -- gating
+    # (if requested) is applied manually afterward, copying whatever the plain layer ends up
+    # holding (zero-init, or informed-init'd) into the GatedActionEmbed wrapper. Doing it in the
+    # opposite order (gate first, informed-init second) would try to index .weight/.bias on
+    # GatedActionEmbed itself, which has no such attributes (it has .linear.weight/.linear.bias
+    # and .gate instead) -- mirrors finetune_worldmem.py's load_worldmem_for_finetuning ordering.
+    model = build_dit_architecture(gated_action=False, zero_init_action_layer=zero_init_action_layer, action_dim=action_dim)
     pretrained = load_file(oasis_ckpt)
     mismatched = {k for k in pretrained if k.startswith("external_cond.")}
     filtered = {k: v for k, v in pretrained.items() if k not in mismatched}
+
+    action_layer = model.external_cond
+    if informed_action_init:
+        pretrained_weight = pretrained.get("external_cond.weight")
+        pretrained_bias = pretrained.get("external_cond.bias")
+        if pretrained_weight is None or pretrained_weight.shape[1] != 25:
+            raise ValueError(
+                f"informed_action_init=True but couldn't find a 25-dim pretrained external_cond "
+                f"weight in the checkpoint (got {None if pretrained_weight is None else pretrained_weight.shape})."
+            )
+        with torch.no_grad():
+            for src_idx, oasis_idx in informed_init_map.items():
+                action_layer.weight[:, src_idx].copy_(pretrained_weight[:, oasis_idx])
+            action_layer.bias.copy_(pretrained_bias)
+        print(f"informed_action_init=True: copied {len(informed_init_map)} pretrained action "
+              f"columns {informed_init_map} into the new {action_dim}-dim layer; bias copied in full.")
+
+    if gated_action:
+        gated = GatedActionEmbed(action_dim, action_layer.out_features)
+        gated.linear.weight.data.copy_(action_layer.weight.data)
+        gated.linear.bias.data.copy_(action_layer.bias.data)
+        model.external_cond = gated
+
     missing, unexpected = model.load_state_dict(filtered, strict=False)
     # Every key should be one of: the 2 intentionally-dropped external_cond.* tensors (now
     # correctly reinitialized at the new 23-dim shape by the fresh nn.Linear), or a
@@ -228,6 +280,20 @@ class Args:
     setting was found to collapse rollout quality (see warmup_steps docstring for the full
     diagnosis) -- 1e-5 applied to all ~608M pretrained params with no warmup was likely too
     aggressive for a 4,248-window dataset."""
+    use_oasis_native_action_layout: bool = False
+    """If set, reconstructs Craftium's action directly into Oasis's OWN 25-slot ACTION_KEYS
+    column layout (augment_actions_to_oasis_native_layout) instead of Craftium's raw 23-dim
+    vector -- matches the exact column semantics (including real, Oasis-bucket-scaled camera
+    magnitude, NOT sign -- Oasis's own pretraining camera convention is continuous, unlike
+    WorldMem's) the pretrained checkpoint's action-conditioning weights were trained against. See
+    craftium_action_features.py's module-level mapping table for the full derivation."""
+    informed_action_init: bool = False
+    """If set, initializes the reachable action-layer columns (see
+    OASIS_NATIVE_INFORMED_INIT_ACTION_MAP) by copying the pretrained 25-dim checkpoint's own
+    weights for those columns, instead of leaving the whole layer zero-initialized. Only
+    meaningful together with use_oasis_native_action_layout=True -- the plain 23-dim bespoke
+    layout has no established column-level correspondence to Oasis's own action_dim=25 layout to
+    copy from."""
     warmup_steps: int = 200
     """Linear LR warmup from 0 to the target LR over this many steps, applied to BOTH parameter
     groups. Added after a first fine-tuning attempt (lr_pretrained=1e-5, no warmup, no grad
@@ -267,7 +333,11 @@ def main(args: Args):
     device = args.device
     os.makedirs(args.output_dir, exist_ok=True)
 
-    model, vae = load_oasis_for_finetuning(args.oasis_ckpt, args.vae_ckpt, device)
+    action_dim = CRAFTIUM_ACTION_DIM_OASIS_NATIVE if args.use_oasis_native_action_layout else CRAFTIUM_ACTION_DIM
+    model, vae = load_oasis_for_finetuning(
+        args.oasis_ckpt, args.vae_ckpt, device, action_dim=action_dim,
+        informed_action_init=args.informed_action_init,
+    )
 
     if args.resume_from is None and args.smoke_test_steps is None:
         # Save the exact pre-training state (pretrained backbone + freshly-initialized 23-dim
@@ -283,7 +353,10 @@ def main(args: Args):
 
     model.train()
 
-    dataset = CraftiumOasisDataset(args.split_path, "train", window_len=args.window_len)
+    dataset = CraftiumOasisDataset(
+        args.split_path, "train", window_len=args.window_len,
+        use_oasis_native_action_layout=args.use_oasis_native_action_layout,
+    )
     loader = DataLoader(
         dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, drop_last=True
     )

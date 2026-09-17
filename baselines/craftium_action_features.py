@@ -150,6 +150,76 @@ def augment_actions_to_worldmem_native_layout(
 WORLDMEM_NATIVE_INFORMED_INIT_ACTION_MAP = {i: i for i in [2, 11, 12, 13, 14, 15, 16, 24]}
 
 
+# ===== Oasis's own native 25-slot ACTION_KEYS layout (open-oasis/utils.py:31-57) =====
+#
+# Unlike WorldMem, Oasis's own pretraining camera convention is NOT sign-only: verified directly
+# from one_hot_actions (open-oasis/utils.py:60-81), Oasis's cameraX/cameraY are a continuous
+# bucketed magnitude -- value = (bucket - num_buckets) / num_buckets, bin_size=0.5,
+# num_buckets=40 -- asserted into [-1-1e-3, 1+1e-3]. So this mapping keeps REAL scaled magnitude
+# for camera, computed with Oasis's own exact formula, not sign and not raw unscaled degrees.
+#
+# Also unlike WorldMem, Oasis's own pretraining is real diverse human play, not a narrow scripted
+# policy -- it empirically exercises up to 19-21 of its 25 slots per real clip (see
+# docs/action_space_empirical_report.md section 1: jump/sneak/attack/use/hotbar.2-9 all appear).
+# So this mapping fills those in too, using Craftium source columns already verified independently
+# reachable (utils/action_util.py: bare "jump"/"sneak"/"aux1"/"dig" entries each give their own
+# standalone bit; "place+slot_N" entries mean Craftium's stored place(8)/slot_N(10-18) columns are
+# each well-defined booleans in the recorded data even though the control space never offers them
+# standalone) -- a broader reachable set than WorldMem's 8-slot one, not a copy of it.
+#
+# NOTE on index order: Oasis's own ACTION_KEYS has cameraX=15, cameraY=16 -- the OPPOSITE order
+# from WorldMem's minecraft_video_dataset.py (cameraY=15, cameraX=16, a documented swap in
+# docs/action_space_comparison.md). Do not copy WorldMem's order here.
+CRAFTIUM_ACTION_DIM_OASIS_NATIVE = 25
+
+OASIS_CAMERA_BIN_SIZE = 0.5
+OASIS_CAMERA_NUM_BUCKETS = 40  # matches open-oasis/utils.py:71-73 exactly
+
+
+def augment_actions_to_oasis_native_layout(
+    action: np.ndarray, player_yaw: np.ndarray, player_pitch: np.ndarray
+) -> np.ndarray:
+    """(T,25) float32, column order == Oasis's own ACTION_KEYS. 21 of 25 slots are filled from
+    Craftium (all but inventory(0)/ESC(1)/swapHands(20)/pickItem(23), which have no Craftium
+    equivalent and stay 0). Non-camera columns are a direct {0,1} passthrough (both sides
+    verified pure-bool/[0,1]-ranged); camera columns carry Oasis-bucket-scaled real magnitude,
+    not sign -- see module comment above for why this differs from the WorldMem version.
+
+    attack(21)<-dig(7) and use(22)<-place(8) are semantic-meaning matches, not label matches
+    (dig=left-click/mining=attack; place=right-click/placing=use) -- both Craftium columns are
+    independently reachable, non-degenerate booleans in the recorded data (utils/action_util.py).
+    """
+    n = action.shape[0]
+    vec = np.zeros((n, 25), dtype=np.float32)
+
+    # (oasis_idx, craftium_idx) -- hotbar.1-9, movement, jump/sneak/sprint, attack/use, drop.
+    direct_map = [
+        (2, 10), (3, 11), (4, 12), (5, 13), (6, 14), (7, 15), (8, 16), (9, 17), (10, 18),  # hotbar.1-9 <- slot_1-9
+        (11, 0), (12, 1), (13, 2), (14, 3),                                                 # forward/back/left/right
+        (17, 4), (18, 6), (19, 5),                                                          # jump, sneak, sprint<-aux1
+        (21, 7), (22, 8),                                                                   # attack<-dig, use<-place
+        (24, 9),                                                                            # drop (always 0 in practice)
+    ]
+    for oasis_idx, craftium_idx in direct_map:
+        vec[:, oasis_idx] = action[:, craftium_idx]
+
+    cam = compute_clean_camera_deltas(player_yaw, player_pitch, action)  # (T,2) = [yaw_delta, pitch_delta], degrees
+    vec[:, 15] = np.clip(cam[:, 0] / OASIS_CAMERA_BIN_SIZE / OASIS_CAMERA_NUM_BUCKETS, -1.0, 1.0)  # cameraX <- yaw
+    vec[:, 16] = np.clip(cam[:, 1] / OASIS_CAMERA_BIN_SIZE / OASIS_CAMERA_NUM_BUCKETS, -1.0, 1.0)  # cameraY <- pitch
+
+    return vec
+
+
+OASIS_NATIVE_REACHABLE_SLOTS = np.zeros(25, dtype=bool)
+OASIS_NATIVE_REACHABLE_SLOTS[[2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 21, 22, 24]] = True
+
+# Identity map: native layout already places every value in Oasis's own column position -- no
+# reindexing needed, unlike WorldMem's 23-dim bespoke-append path. Camera IS included here (unlike
+# WorldMem's map): Oasis's real-magnitude camera is well-calibrated against its own pretrained
+# weights (no sign-reduction mismatch to work around), so informed-init is valid for it too.
+OASIS_NATIVE_INFORMED_INIT_ACTION_MAP = {int(i): int(i) for i in np.where(OASIS_NATIVE_REACHABLE_SLOTS)[0]}
+
+
 if __name__ == "__main__":
     # Standalone structural verification, no training needed -- run on real Craftium episodes.
     # See the "Reconstruct Craftium actions into WorldMem's own native 25-slot layout" plan's
@@ -191,3 +261,34 @@ if __name__ == "__main__":
     print(f"  hotbar.1(2).sum() = {out[:,2].sum()} (expect very small/near 0)")
     print(f"  cameraX(16) unique values: {np.unique(out[:,16])}")
     print(f"  cameraY(15) unique values: {np.unique(out[:,15])}")
+
+    print(f"\nChecking Oasis native layout on {len(levels)} real episodes...")
+    for lvl in levels:
+        npz = np.load(os.path.join(lvl, "data.npz"))
+        action = npz["action"]
+        out = augment_actions_to_oasis_native_layout(action, npz["player_yaw"], npz["player_pitch"])
+
+        assert out.shape == (action.shape[0], 25), f"{lvl}: bad shape {out.shape}"
+        assert np.all(out[:, ~OASIS_NATIVE_REACHABLE_SLOTS] == 0.0), f"{lvl}: unreachable slot nonzero"
+        # (oasis_idx, craftium_idx) pairs for every non-camera passthrough column.
+        oasis_idxs = [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 17, 18, 19, 21, 22, 24]
+        craftium_idxs = [10, 11, 12, 13, 14, 15, 16, 17, 18, 0, 1, 2, 3, 4, 6, 5, 7, 8, 9]
+        assert np.array_equal(out[:, oasis_idxs], action[:, craftium_idxs].astype(np.float32)), (
+            f"{lvl}: pass-through columns mismatch"
+        )
+        cam_x = out[:, 15]
+        cam_y = out[:, 16]
+        assert np.all((cam_x >= -1 - 1e-3) & (cam_x <= 1 + 1e-3)), f"{lvl}: cameraX out of Oasis's [-1,1] range"
+        assert np.all((cam_y >= -1 - 1e-3) & (cam_y <= 1 + 1e-3)), f"{lvl}: cameraY out of Oasis's [-1,1] range"
+
+    print("All Oasis-native-layout structural assertions passed on all 20 episodes.")
+
+    lvl = levels[0]
+    npz = np.load(os.path.join(lvl, "data.npz"))
+    out = augment_actions_to_oasis_native_layout(npz["action"], npz["player_yaw"], npz["player_pitch"])
+    print(f"\n{lvl} Oasis-layout sanity check:")
+    print(f"  drop(24).sum() = {out[:,24].sum()} (expect exactly 0)")
+    print(f"  cameraX(15) unique values: {np.unique(out[:,15])}")
+    print(f"  cameraY(16) unique values: {np.unique(out[:,16])}")
+    print(f"  jump(17).sum()={out[:,17].sum()}  sneak(18).sum()={out[:,18].sum()}  "
+          f"sprint(19).sum()={out[:,19].sum()}  attack(21).sum()={out[:,21].sum()}  use(22).sum()={out[:,22].sum()}")

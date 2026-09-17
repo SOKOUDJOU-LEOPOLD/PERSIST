@@ -58,10 +58,20 @@ class CraftiumOasisDataset(Dataset):
         load_actions' convention (frame 0's action is all-zero).
     """
 
-    def __init__(self, split_path: str, split: str, window_len: int = 32, dataset_root: str = DATASET_ROOT):
+    def __init__(
+        self, split_path: str, split: str, window_len: int = 32, dataset_root: str = DATASET_ROOT,
+        use_oasis_native_action_layout: bool = False,
+    ):
+        """use_oasis_native_action_layout: if set, actions are reconstructed into Oasis's OWN
+        25-slot ACTION_KEYS column layout (augment_actions_to_oasis_native_layout) instead of
+        Craftium's raw 23-dim vector -- matches the exact column semantics (including real,
+        Oasis-bucket-scaled camera magnitude, not sign) the pretrained checkpoint's
+        action-conditioning weights were trained against. See craftium_action_features.py's
+        module-level mapping table for the full derivation."""
         self.window_len = window_len
         self.dataset_root = dataset_root
         self.level_ids = load_split(split_path, split)
+        self.use_oasis_native_action_layout = use_oasis_native_action_layout
         # Every episode has 600 frames (confirmed: data.npz's action field shape (600, 23) for
         # every level in persist-eval-sample) -- windows per episode computed from that, not
         # re-probed per __getitem__.
@@ -82,16 +92,26 @@ class CraftiumOasisDataset(Dataset):
         frames = frames.permute(0, 3, 1, 2).contiguous()  # (T, 3, H, W)
 
         npz = np.load(os.path.join(level_dir, "data.npz"))
-        action = npz["action"][start : start + self.window_len].astype(np.float32)  # (T, 23) bool -> float
-        action = torch.from_numpy(action)
+        if self.use_oasis_native_action_layout:
+            from craftium_action_features import augment_actions_to_oasis_native_layout
+            # Applied to the FULL 600-frame pool, not the window slice: camera-delta computation
+            # (compute_clean_camera_deltas) needs consecutive full-pool frames to diff against,
+            # same reason finetune_worldmem_data.py's dataset does this pool-side too.
+            action_pool = augment_actions_to_oasis_native_layout(
+                npz["action"], npz["player_yaw"], npz["player_pitch"]
+            )  # (600, 25)
+        else:
+            action_pool = npz["action"].astype(np.float32)  # (600, 23)
+
+        action = torch.from_numpy(action_pool[start : start + self.window_len])  # (T, 23) or (T, 25)
         # Shift by one frame: action[t] becomes "the action that produced frame t" (load_actions
         # convention). For a mid-episode window (start > 0), the action preceding this window's
-        # first frame is the real action[start - 1] from data.npz, not zero -- only true episode
+        # first frame is the real action_pool[start - 1], not zero -- only true episode
         # boundaries (start == 0) get an all-zero first action.
         if start == 0:
             prev_action = torch.zeros(1, action.shape[1])
         else:
-            prev_action = torch.from_numpy(npz["action"][start - 1 : start].astype(np.float32))
+            prev_action = torch.from_numpy(action_pool[start - 1 : start])
         action = torch.cat([prev_action, action[:-1]], dim=0)
 
         return frames, action
