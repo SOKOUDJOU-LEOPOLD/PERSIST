@@ -14,7 +14,7 @@ and frame 0 gets an all-zero action (there is no action preceding the first fram
 import json
 import os
 from dataclasses import dataclass
-from typing import List
+from typing import List, Literal
 
 import av
 import numpy as np
@@ -56,11 +56,25 @@ class CraftiumOasisDataset(Dataset):
     frames: (T, 3, 360, 640) float32 in [0, 1] -- matches baselines/open-oasis/utils.py:load_prompt.
     actions: (T, 23) float32 -- Craftium's native action vector, shifted by one frame per
         load_actions' convention (frame 0's action is all-zero).
+
+    Two indexing modes, controlled by `mode`:
+
+    "sliding" (the default, used for training): every episode is indexed into ALL possible
+        contiguous windows (every start position in [0, 600 - window_len], not just a
+        non-overlapping grid) -- these form one pooled index across every episode in the split,
+        and __getitem__ draws from that full pool. This is deliberately a much larger, denser
+        pool than the old fixed-grid scheme (600 // window_len non-overlapping windows per
+        episode) it replaces -- see the Oasis data-scaling study plan's "virtual indexing across
+        the entire dataset" section for why.
+    "fixed" (used for validation / train-eval tracking): exactly ONE window per episode, always
+        starting at frame 0 -- the same window every time __getitem__ is called for a given index,
+        so a metric computed over this dataset is directly comparable across repeated calls (e.g.
+        at different training steps), not resampled fresh each time the way "sliding" is.
     """
 
     def __init__(
         self, split_path: str, split: str, window_len: int = 32, dataset_root: str = DATASET_ROOT,
-        use_oasis_native_action_layout: bool = False,
+        use_oasis_native_action_layout: bool = False, mode: Literal["sliding", "fixed"] = "sliding",
     ):
         """use_oasis_native_action_layout: if set, actions are reconstructed into Oasis's OWN
         25-slot ACTION_KEYS column layout (augment_actions_to_oasis_native_layout) instead of
@@ -72,19 +86,29 @@ class CraftiumOasisDataset(Dataset):
         self.dataset_root = dataset_root
         self.level_ids = load_split(split_path, split)
         self.use_oasis_native_action_layout = use_oasis_native_action_layout
+        self.mode = mode
         # Every episode has 600 frames (confirmed: data.npz's action field shape (600, 23) for
-        # every level in persist-eval-sample) -- windows per episode computed from that, not
-        # re-probed per __getitem__.
+        # every level in persist-eval-sample) -- the index pool is built from that, not re-probed
+        # per __getitem__.
         self.frames_per_episode = 600
-        self.windows_per_episode = self.frames_per_episode // window_len
+
+        if mode == "sliding":
+            # Every contiguous start position across every episode, pooled into one flat index --
+            # (level_idx, start) for start in [0, 600 - window_len].
+            starts = list(range(self.frames_per_episode - window_len + 1))
+            self._index = [(li, s) for li in range(len(self.level_ids)) for s in starts]
+        elif mode == "fixed":
+            # Exactly one window per episode, always starting at frame 0.
+            self._index = [(li, 0) for li in range(len(self.level_ids))]
+        else:
+            raise ValueError(f"unknown mode: {mode}")
 
     def __len__(self) -> int:
-        return len(self.level_ids) * self.windows_per_episode
+        return len(self._index)
 
     def __getitem__(self, idx: int):
-        level_idx, window_idx = divmod(idx, self.windows_per_episode)
+        level_idx, start = self._index[idx]
         level_id = self.level_ids[level_idx]
-        start = window_idx * self.window_len
         level_dir = os.path.join(self.dataset_root, level_id)
 
         frames = read_video_window(os.path.join(level_dir, "rgb.mp4"), start, self.window_len)
@@ -130,8 +154,20 @@ if __name__ == "__main__":
     import tyro
 
     args = tyro.cli(_SmokeTestArgs)
-    ds = CraftiumOasisDataset(args.split_path, "train", window_len=32)
-    print(f"Dataset: {len(ds)} windows from {len(ds.level_ids)} episodes")
+
+    ds = CraftiumOasisDataset(args.split_path, "train", window_len=32, mode="sliding")
+    expected_pool = len(ds.level_ids) * (600 - 32 + 1)
+    assert len(ds) == expected_pool, f"sliding pool size {len(ds)} != expected {expected_pool}"
+    print(f"[sliding] {len(ds)} windows from {len(ds.level_ids)} episodes (= {600-32+1} starts/episode)")
     frames, action = ds[0]
     print(f"frames: {frames.shape} {frames.dtype} min={frames.min():.3f} max={frames.max():.3f}")
     print(f"action: {action.shape} {action.dtype} sum={action.sum():.1f}")
+
+    ds_fixed = CraftiumOasisDataset(args.split_path, "train", window_len=32, mode="fixed")
+    assert len(ds_fixed) == len(ds_fixed.level_ids), "fixed mode should have exactly one window per episode"
+    frames_a, action_a = ds_fixed[0]
+    frames_b, action_b = ds_fixed[0]
+    assert torch.equal(frames_a, frames_b) and torch.equal(action_a, action_b), (
+        "fixed mode must return the SAME window on repeated calls -- got different data"
+    )
+    print(f"[fixed] {len(ds_fixed)} windows (one per episode), repeated-call determinism verified")

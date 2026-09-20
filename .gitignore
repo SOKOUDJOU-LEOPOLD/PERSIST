@@ -23,6 +23,9 @@ baselines/outputs_worldmem_validate/
 *.log
 *.out
 
+## wandb local run cache (not source, regenerated per-machine)
+baselines/wandb/
+
 ## run files
 outputs/
 local_outputs/

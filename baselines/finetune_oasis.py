@@ -22,6 +22,7 @@ Example:
     cd baselines/open-oasis
     python ../finetune_oasis.py --smoke-test-steps 50
 """
+import json
 import os
 import sys
 import time
@@ -33,6 +34,8 @@ import torch.nn.functional as F
 from einops import rearrange
 from safetensors.torch import load_file
 from torch.utils.data import DataLoader
+from torchmetrics.image import StructuralSimilarityIndexMeasure
+from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
 from tqdm import tqdm
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -246,6 +249,122 @@ def sigmoid_beta_schedule(timesteps, start=-3, end=3, tau=1, clamp_min=1e-5):
     return torch.clip(betas, 0, 0.999)
 
 
+def psnr_per_sample(gen: torch.Tensor, real: torch.Tensor) -> torch.Tensor:
+    """gen, real: (B, 3, H, W) float in [0, 1]. Returns (B,) -- one PSNR per sample (same formula
+    used everywhere else in this project, e.g. generate_oasis_native_grid.py's psnr(), just
+    batched and vectorized here instead of a per-frame Python loop, and averaged the same way:
+    per-sample first, then mean -- not a single pooled-MSE-over-the-whole-batch number, which
+    would be a subtly different (if similar) quantity)."""
+    mse = torch.mean(((gen * 255.0) - (real * 255.0)) ** 2, dim=[1, 2, 3])  # (B,)
+    mse = torch.clamp(mse, min=1e-10)
+    return 10 * torch.log10(255.0**2 / mse)
+
+
+@torch.no_grad()
+def compute_eval_metrics(
+    model, vae, loader, device, alphas_cumprod_flat: torch.Tensor, scaling_factor: float,
+    ssim_metric: StructuralSimilarityIndexMeasure, lpips_metric: LearnedPerceptualImagePatchSimilarity,
+    ddim_steps: int = 10, stabilization_level: int = 15,
+) -> dict:
+    """Runs the cheap "one-step-ahead" validation/train-eval check: for every (frames, actions)
+    window in `loader`, ALL context frames [0..T-2] are real (VAE-encoded from real pixels, held
+    at stabilization_level noise -- the same "trustworthy context" convention
+    finetune_oasis_rollout.py's generate_rollout uses at inference time), and ONLY the single
+    target frame [T-1] is genuinely sampled: starts from pure noise, run through `ddim_steps`
+    reverse-diffusion steps exactly like generate_rollout's own inner loop (same math, copied
+    here rather than reused directly -- generate_rollout is hard-wired for a single real seed
+    frame plus fully-autoregressive-generated context, not "many real context frames, one sampled
+    target," which is what this needs). No autoregressive chaining: every window's target
+    prediction is conditioned on REAL frames only, so this measures one-step prediction quality in
+    isolation, not compounding rollout drift -- deliberately a different, much cheaper metric than
+    the full-rollout PSNR the post-training sweep (eval_oasis_checkpoint_sweep.py) computes.
+
+    Also returns a plain v-prediction MSE loss at a fixed mid noise level (same formula training
+    uses, but a FIXED t=500 for every frame instead of training's random-per-frame t, so repeated
+    calls with the same window are exactly comparable across checkpoints).
+
+    SSIM and LPIPS are computed on the same one-step-ahead generated-vs-real target frame pair as
+    PSNR -- not a separate, more expensive pass -- via `ssim_metric`/`lpips_metric`, torchmetrics
+    modules instantiated once in main() and reused (LPIPS in particular loads a pretrained AlexNet
+    backbone, so it must not be recreated per call). LPIPS' `net_type='alex'` matches WorldMem's
+    own eval code (algorithms/common/metrics/lpips.py) for direct cross-baseline comparability.
+
+    model.eval() is the caller's responsibility (and switching back to model.train() afterward) --
+    kept out of this function so it composes cleanly whether called for val or train-eval.
+
+    Returns {"loss": float, "psnr": float, "ssim": float, "lpips": float} averaged over every
+    window in `loader`.
+    """
+    total_loss, total_psnr, total_ssim, total_lpips, n_windows = 0.0, 0.0, 0.0, 0.0, 0
+    max_noise_level = 1000
+    noise_abs_max = 20
+    ac = alphas_cumprod_flat.view(-1, 1, 1, 1)  # (1000, 1, 1, 1), matches generate_rollout's own reshape
+
+    for frames, actions in loader:
+        frames = frames.to(device, non_blocking=True)
+        actions = actions.to(device, non_blocking=True)
+        B, T = frames.shape[:2]
+        H, W = frames.shape[-2:]
+
+        flat = rearrange(frames, "b t c h w -> (b t) c h w")
+        with torch.autocast("cuda", dtype=torch.bfloat16):
+            latents = vae.encode(flat * 2 - 1).mean * scaling_factor
+        latents = rearrange(
+            latents.float(), "(b t) (h w) c -> b t c h w", t=T, h=H // vae.patch_size, w=W // vae.patch_size
+        )
+
+        # --- fixed-noise-level v-prediction loss, same formula as training ---
+        t_idx = torch.full((B, T), 500, dtype=torch.long, device=device)
+        noise = torch.randn_like(latents)
+        ac_t = alphas_cumprod_flat[t_idx].view(B, T, 1, 1, 1)
+        x_t = ac_t.sqrt() * latents + (1 - ac_t).sqrt() * noise
+        v_target = ac_t.sqrt() * noise - (1 - ac_t).sqrt() * latents
+        with torch.autocast("cuda", dtype=torch.bfloat16):
+            v_pred = model(x_t, t_idx, actions)
+        total_loss += F.mse_loss(v_pred.float(), v_target).item() * B
+
+        # --- one-step-ahead PSNR: real context (stabilization_level), genuine DDIM chain for target ---
+        context = latents[:, :-1]  # (B, T-1, C, h, w) -- all real
+        target_noise = torch.clamp(torch.randn_like(latents[:, -1:]), -noise_abs_max, noise_abs_max)
+        x = torch.cat([context, target_noise], dim=1)  # (B, T, C, h, w)
+        noise_range = torch.linspace(-1, max_noise_level - 1, ddim_steps + 1)
+        for noise_idx in reversed(range(1, ddim_steps + 1)):
+            t_ctx = torch.full((B, T - 1), stabilization_level - 1, dtype=torch.long, device=device)
+            t_tgt = torch.full((B, 1), noise_range[noise_idx], dtype=torch.long, device=device)
+            t_tgt_next = torch.full((B, 1), noise_range[noise_idx - 1], dtype=torch.long, device=device)
+            t_tgt_next = torch.where(t_tgt_next < 0, t_tgt, t_tgt_next)
+            t_full = torch.cat([t_ctx, t_tgt], dim=1)
+            t_next_full = torch.cat([t_ctx, t_tgt_next], dim=1)
+
+            with torch.autocast("cuda", dtype=torch.bfloat16):
+                v = model(x, t_full, actions)
+
+            x_start = ac[t_full].sqrt() * x - (1 - ac[t_full]).sqrt() * v
+            x_noise = ((1 / ac[t_full]).sqrt() * x - x_start) / (1 / ac[t_full] - 1).sqrt()
+            alpha_next = ac[t_next_full].clone()
+            alpha_next[:, :-1] = torch.ones_like(alpha_next[:, :-1])  # context frames never change
+            if noise_idx == 1:
+                alpha_next[:, -1:] = torch.ones_like(alpha_next[:, -1:])
+            x_pred = alpha_next.sqrt() * x_start + x_noise * (1 - alpha_next).sqrt()
+            x[:, -1:] = x_pred[:, -1:]
+
+        target_latent = rearrange(x[:, -1], "b c h w -> b (h w) c")
+        with torch.autocast("cuda", dtype=torch.bfloat16):
+            gen_target = (vae.decode(target_latent / scaling_factor) + 1) / 2  # (B, 3, H, W), [0,1]
+        gen_target = torch.clamp(gen_target.float(), 0, 1)
+        real_target = frames[:, -1]  # (B, 3, H, W), already [0,1]
+        total_psnr += psnr_per_sample(gen_target, real_target).sum().item()
+        total_ssim += ssim_metric(gen_target, real_target).item() * B
+        total_lpips += lpips_metric(gen_target, real_target).item() * B
+
+        n_windows += B
+
+    return {
+        "loss": total_loss / n_windows, "psnr": total_psnr / n_windows,
+        "ssim": total_ssim / n_windows, "lpips": total_lpips / n_windows,
+    }
+
+
 @dataclass
 class Args:
     split_path: str = "outputs/finetune_split.json"
@@ -327,17 +446,61 @@ class Args:
     num_workers: int = 4
     seed: int = 0
 
+    val_every: int = 100
+    """Every this many steps: compute validation loss + PSNR on the fixed "val" episode set, AND
+    the identical two metrics on a fixed "train_eval" episode set (see finetune_oasis_data.py /
+    scripts/make_oasis_scaling_subsets.py), logged on the same step axis so the two are directly
+    comparable -- the point where they start moving in opposite directions (train_eval still
+    improving, val getting worse) is the overfitting-onset signal this is for. Both use the cheap
+    one-step-ahead metric (compute_eval_metrics above), not a full autoregressive rollout.
+    Silently skipped (with a printed warning, once) if --split-path's json has no "val" key --
+    keeps this backward-compatible with older 2-way (train/test only) split files."""
+    eval_ddim_steps: int = 10
+    """DDIM steps for the one-step-ahead val/train_eval PSNR check (compute_eval_metrics) --
+    independent of training, which never runs a reverse-diffusion chain at all."""
+    use_wandb: bool = True
+    wandb_project: str = "persist-oasis-finetune"
+    wandb_entity: str = "leopoldgatsing-texas-a-m-university"
+    wandb_run_name: Optional[str] = None
+    """Defaults to the output_dir's basename if not set."""
+
 
 def main(args: Args):
     torch.manual_seed(args.seed)
     device = args.device
     os.makedirs(args.output_dir, exist_ok=True)
 
+    if args.use_wandb:
+        import wandb
+
     action_dim = CRAFTIUM_ACTION_DIM_OASIS_NATIVE if args.use_oasis_native_action_layout else CRAFTIUM_ACTION_DIM
     model, vae = load_oasis_for_finetuning(
         args.oasis_ckpt, args.vae_ckpt, device, action_dim=action_dim,
         informed_action_init=args.informed_action_init,
     )
+
+    # Loaded ONCE, here, if resuming -- cached in resume_ckpt and reused later for
+    # optimizer/scheduler state too (once those exist), rather than re-reading a multi-GB file
+    # twice. Read this early specifically so wandb.init (right below) can reopen the ORIGINAL
+    # wandb run instead of silently creating a new one -- see its comment for why that matters.
+    resume_ckpt = None
+    resume_wandb_run_id = None
+    if args.resume_from is not None:
+        resume_ckpt = torch.load(args.resume_from, map_location=device, weights_only=False)
+        model.load_state_dict(resume_ckpt["model"])
+        resume_wandb_run_id = resume_ckpt.get("wandb_run_id")
+
+    if args.use_wandb:
+        wandb.init(
+            project=args.wandb_project, entity=args.wandb_entity,
+            name=args.wandb_run_name or os.path.basename(os.path.normpath(args.output_dir)),
+            config=vars(args),
+            id=resume_wandb_run_id, resume="must" if resume_wandb_run_id else None,
+        )
+        if args.resume_from is not None and resume_wandb_run_id is None:
+            print(f"WARNING: resuming from {args.resume_from}, but it has no saved wandb_run_id "
+                  f"(saved before this feature existed?) -- this will start a NEW wandb run "
+                  f"rather than continuing the original one's chart history.")
 
     if args.resume_from is None and args.smoke_test_steps is None:
         # Save the exact pre-training state (pretrained backbone + freshly-initialized 23-dim
@@ -348,18 +511,56 @@ def main(args: Args):
         # didn't help" -- this step-0 checkpoint isolates the latter question cleanly. Skipped
         # when resuming -- that step-0 checkpoint already exists from the original run.
         step0_path = os.path.join(args.output_dir, "step_000000.pt")
-        torch.save({"model": model.state_dict(), "step": 0, "args": vars(args)}, step0_path)
+        torch.save({
+            "model": model.state_dict(), "step": 0, "args": vars(args),
+            "wandb_run_id": wandb.run.id if args.use_wandb else None,
+        }, step0_path)
         print(f"Saved pre-training checkpoint (pretrained backbone + fresh 23-dim action layer) to {step0_path}")
 
     model.train()
 
     dataset = CraftiumOasisDataset(
         args.split_path, "train", window_len=args.window_len,
-        use_oasis_native_action_layout=args.use_oasis_native_action_layout,
+        use_oasis_native_action_layout=args.use_oasis_native_action_layout, mode="sliding",
     )
     loader = DataLoader(
         dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, drop_last=True
     )
+
+    # Fixed val / train-eval loaders for the cheap one-step-ahead check (see Args.val_every).
+    # Gracefully disabled (once-printed warning, not a crash) if --split-path doesn't have a
+    # "val" key -- e.g. the older 2-way (train/test only) split files used by this session's
+    # earlier single-episode overfit runs.
+    with open(args.split_path) as f:
+        split_keys = set(json.load(f).keys())
+    run_validation = args.val_every > 0 and "val" in split_keys and "train_eval" in split_keys
+    if args.val_every > 0 and not run_validation:
+        print(f"WARNING: --split-path {args.split_path} has no 'val'/'train_eval' key -- "
+              f"skipping validation (val_every={args.val_every} has no effect).")
+    val_loader = train_eval_loader = None
+    if run_validation:
+        val_dataset = CraftiumOasisDataset(
+            args.split_path, "val", window_len=args.window_len,
+            use_oasis_native_action_layout=args.use_oasis_native_action_layout, mode="fixed",
+        )
+        train_eval_dataset = CraftiumOasisDataset(
+            args.split_path, "train_eval", window_len=args.window_len,
+            use_oasis_native_action_layout=args.use_oasis_native_action_layout, mode="fixed",
+        )
+        val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
+        train_eval_loader = DataLoader(
+            train_eval_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers
+        )
+        print(f"Validation enabled: {len(val_dataset)} val windows, {len(train_eval_dataset)} "
+              f"train-eval windows, checked every {args.val_every} steps.")
+
+    # Instantiated once and reused across every val/train-eval check (LPIPS loads a pretrained
+    # AlexNet backbone -- recreating it every check would repeatedly reload those weights for no
+    # reason). normalize=True on LPIPS / data_range=1.0 on SSIM since gen/real frames are [0,1],
+    # not the [-1,1] LPIPS otherwise assumes.
+    ssim_metric = StructuralSimilarityIndexMeasure(data_range=1.0).to(device) if run_validation else None
+    lpips_metric = LearnedPerceptualImagePatchSimilarity(net_type="alex", normalize=True).to(device) \
+        if run_validation else None
 
     new_layer_params = list(model.external_cond.parameters())
     new_layer_ids = {id(p) for p in new_layer_params}
@@ -396,10 +597,10 @@ def main(args: Args):
 
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda)
 
+    # model + wandb run were already resumed above (right after model construction); apply the
+    # rest of resume_ckpt (optimizer/scheduler state, start step) now that those objects exist.
     start_step = 0
-    if args.resume_from is not None:
-        resume_ckpt = torch.load(args.resume_from, map_location=device, weights_only=False)
-        model.load_state_dict(resume_ckpt["model"])
+    if resume_ckpt is not None:
         optimizer.load_state_dict(resume_ckpt["optimizer"])
         scheduler.load_state_dict(resume_ckpt["scheduler"])
         start_step = resume_ckpt["step"]
@@ -452,13 +653,41 @@ def main(args: Args):
             pbar.update(1)
             if step % args.log_every == 0:
                 pbar.set_postfix(loss=f"{loss.item():.4f}", grad_norm=f"{grad_norm.item():.2f}")
+                if args.use_wandb:
+                    wandb.log({"train/loss": loss.item(), "train/grad_norm": grad_norm.item()}, step=step)
+
+            if run_validation and step % args.val_every == 0:
+                model.eval()
+                val_metrics = compute_eval_metrics(
+                    model, vae, val_loader, device, alphas_cumprod, scaling_factor,
+                    ssim_metric, lpips_metric, ddim_steps=args.eval_ddim_steps,
+                )
+                train_eval_metrics = compute_eval_metrics(
+                    model, vae, train_eval_loader, device, alphas_cumprod, scaling_factor,
+                    ssim_metric, lpips_metric, ddim_steps=args.eval_ddim_steps,
+                )
+                model.train()
+                print(f"[step {step}] val: loss={val_metrics['loss']:.4f} psnr={val_metrics['psnr']:.2f}dB "
+                      f"ssim={val_metrics['ssim']:.4f} lpips={val_metrics['lpips']:.4f}  "
+                      f"train_eval: loss={train_eval_metrics['loss']:.4f} psnr={train_eval_metrics['psnr']:.2f}dB "
+                      f"ssim={train_eval_metrics['ssim']:.4f} lpips={train_eval_metrics['lpips']:.4f}")
+                if args.use_wandb:
+                    wandb.log({
+                        "val/loss": val_metrics["loss"], "val/psnr": val_metrics["psnr"],
+                        "val/ssim": val_metrics["ssim"], "val/lpips": val_metrics["lpips"],
+                        "train_eval/loss": train_eval_metrics["loss"], "train_eval/psnr": train_eval_metrics["psnr"],
+                        "train_eval/ssim": train_eval_metrics["ssim"], "train_eval/lpips": train_eval_metrics["lpips"],
+                    }, step=step)
 
             if args.smoke_test_steps is None and step % args.checkpoint_every == 0:
                 ckpt_path = os.path.join(args.output_dir, f"step_{step:06d}.pt")
                 torch.save({
                     "model": model.state_dict(), "optimizer": optimizer.state_dict(),
                     "scheduler": scheduler.state_dict(), "step": step, "args": vars(args),
+                    "wandb_run_id": wandb.run.id if args.use_wandb else None,
                 }, ckpt_path)
+                if args.use_wandb:
+                    wandb.log({"checkpoint_step": step}, step=step)
 
     pbar.close()
     elapsed = time.time() - t0
@@ -478,8 +707,15 @@ def main(args: Args):
         torch.save({
             "model": model.state_dict(), "optimizer": optimizer.state_dict(),
             "scheduler": scheduler.state_dict(), "step": step, "args": vars(args),
+            "wandb_run_id": wandb.run.id if args.use_wandb else None,
         }, final_path)
         print(f"Saved final checkpoint to {final_path}")
+
+    if args.use_wandb:
+        wandb.log({
+            "summary/peak_gpu_mem_gb": peak_mem_gb, "summary/mean_step_time_s": mean_step_time,
+        }, step=step)
+        wandb.finish()
 
 
 if __name__ == "__main__":
