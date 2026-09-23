@@ -20,17 +20,21 @@ with open-oasis -- see the earlier finding that this repo has zero training code
 
 Example:
     cd baselines/open-oasis
-    python ../finetune_oasis.py --smoke-test-steps 50
+    accelerate launch --num_processes 1 ../finetune_oasis.py --smoke-test-steps 50            # single-GPU
+    accelerate launch --multi_gpu --mixed_precision bf16 --num_processes 4 ../finetune_oasis.py ...  # multi-GPU
 """
 import json
 import os
 import sys
 import time
 from dataclasses import dataclass
-from typing import Optional
+from datetime import timedelta
+from typing import Literal, Optional
 
 import torch
 import torch.nn.functional as F
+from accelerate import Accelerator
+from accelerate.utils import InitProcessGroupKwargs
 from einops import rearrange
 from safetensors.torch import load_file
 from torch.utils.data import DataLoader
@@ -41,7 +45,7 @@ from tqdm import tqdm
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "open-oasis"))
 
-from finetune_oasis_data import CraftiumOasisDataset  # noqa: E402
+from finetune_oasis_data import DATASET_ROOT, CraftiumOasisDataset  # noqa: E402
 from craftium_action_features import (  # noqa: E402
     CRAFTIUM_ACTION_DIM_OASIS_NATIVE,
     OASIS_NATIVE_INFORMED_INIT_ACTION_MAP,
@@ -264,7 +268,7 @@ def psnr_per_sample(gen: torch.Tensor, real: torch.Tensor) -> torch.Tensor:
 def compute_eval_metrics(
     model, vae, loader, device, alphas_cumprod_flat: torch.Tensor, scaling_factor: float,
     ssim_metric: StructuralSimilarityIndexMeasure, lpips_metric: LearnedPerceptualImagePatchSimilarity,
-    ddim_steps: int = 10, stabilization_level: int = 15,
+    accelerator: Accelerator, ddim_steps: int = 10, stabilization_level: int = 15,
 ) -> dict:
     """Runs the cheap "one-step-ahead" validation/train-eval check: for every (frames, actions)
     window in `loader`, ALL context frames [0..T-2] are real (VAE-encoded from real pixels, held
@@ -307,7 +311,7 @@ def compute_eval_metrics(
         H, W = frames.shape[-2:]
 
         flat = rearrange(frames, "b t c h w -> (b t) c h w")
-        with torch.autocast("cuda", dtype=torch.bfloat16):
+        with accelerator.autocast():
             latents = vae.encode(flat * 2 - 1).mean * scaling_factor
         latents = rearrange(
             latents.float(), "(b t) (h w) c -> b t c h w", t=T, h=H // vae.patch_size, w=W // vae.patch_size
@@ -319,7 +323,7 @@ def compute_eval_metrics(
         ac_t = alphas_cumprod_flat[t_idx].view(B, T, 1, 1, 1)
         x_t = ac_t.sqrt() * latents + (1 - ac_t).sqrt() * noise
         v_target = ac_t.sqrt() * noise - (1 - ac_t).sqrt() * latents
-        with torch.autocast("cuda", dtype=torch.bfloat16):
+        with accelerator.autocast():
             v_pred = model(x_t, t_idx, actions)
         total_loss += F.mse_loss(v_pred.float(), v_target).item() * B
 
@@ -336,7 +340,7 @@ def compute_eval_metrics(
             t_full = torch.cat([t_ctx, t_tgt], dim=1)
             t_next_full = torch.cat([t_ctx, t_tgt_next], dim=1)
 
-            with torch.autocast("cuda", dtype=torch.bfloat16):
+            with accelerator.autocast():
                 v = model(x, t_full, actions)
 
             x_start = ac[t_full].sqrt() * x - (1 - ac[t_full]).sqrt() * v
@@ -349,7 +353,7 @@ def compute_eval_metrics(
             x[:, -1:] = x_pred[:, -1:]
 
         target_latent = rearrange(x[:, -1], "b c h w -> b (h w) c")
-        with torch.autocast("cuda", dtype=torch.bfloat16):
+        with accelerator.autocast():
             gen_target = (vae.decode(target_latent / scaling_factor) + 1) / 2  # (B, 3, H, W), [0,1]
         gen_target = torch.clamp(gen_target.float(), 0, 1)
         real_target = frames[:, -1]  # (B, 3, H, W), already [0,1]
@@ -368,6 +372,11 @@ def compute_eval_metrics(
 @dataclass
 class Args:
     split_path: str = "outputs/finetune_split.json"
+    dataset_root: str = DATASET_ROOT
+    """Directory containing one subfolder per episode (rgb.mp4 + data.npz), joined with each
+    level_id from --split-path. Defaults to CraftiumOasisDataset's own DATASET_ROOT (the original
+    persist-eval-sample dataset) -- override to point at a different extracted dataset, e.g. the
+    Luanti motworld-s1nav-10k scaling data, without needing a code change per dataset."""
     oasis_ckpt: str = "open-oasis/oasis500m.safetensors"
     vae_ckpt: str = "open-oasis/vit-l-20.safetensors"
     window_len: int = 32
@@ -426,6 +435,13 @@ class Args:
     grad_clip_norm: float = 1.0
     """Max gradient norm (torch.nn.utils.clip_grad_norm_) -- second half of the same fix, caps
     any single step's update magnitude regardless of warmup state."""
+    mixed_precision: Literal["fp16", "bf16", "no"] = "bf16"
+    """Passed to accelerate's Accelerator, replacing the previous hardcoded
+    torch.autocast("cuda", dtype=torch.bfloat16) calls. Defaults to "bf16" to preserve the exact
+    numerical behavior this script always used before this flag existed."""
+    grad_accumulation_steps: int = 1
+    """Micro-batches accumulated per optimizer.step() via accelerator.accumulate(model). Defaults
+    to 1 (no-op, unchanged behavior) -- raise to increase effective batch size without more GPUs."""
     num_steps: int = 2000
     """Target step to train to (not "additional steps" -- e.g. resuming from step 500 with
     num_steps=3000 runs 2500 more steps, ending at 3000, not 3500)."""
@@ -442,7 +458,6 @@ class Args:
     log_every: int = 10
     checkpoint_every: int = 500
     output_dir: str = "outputs/finetune_oasis"
-    device: str = "cuda:0"
     num_workers: int = 4
     seed: int = 0
 
@@ -466,8 +481,27 @@ class Args:
 
 
 def main(args: Args):
+    # Pin the CUDA device BEFORE Accelerator() touches torch.distributed at all: internally,
+    # Accelerator calls torch.distributed.init_process_group() first and only sets the device
+    # afterward (accelerate/state.py), leaving the rank-to-GPU mapping ambiguous to NCCL for that
+    # window -- on this cluster (old kernel, per its own warning) that ambiguity reproducibly hung
+    # the very next collective op. Setting it ourselves first, exactly like the previous raw-DDP
+    # code did via torch.cuda.set_device(local_rank), avoids the ambiguity entirely. A no-op for a
+    # single-process run (LOCAL_RANK unset -> defaults to 0).
+    if torch.cuda.is_available():
+        torch.cuda.set_device(int(os.environ.get("LOCAL_RANK", "0")))
+
+    accelerator = Accelerator(
+        mixed_precision=args.mixed_precision,
+        gradient_accumulation_steps=args.grad_accumulation_steps,
+        kwargs_handlers=[InitProcessGroupKwargs(timeout=timedelta(minutes=10))],
+    )
+    # Kept as this exact alias (not a rename to accelerator.is_main_process throughout) so every
+    # existing `is_main`-gated site below needs no further textual changes.
+    is_main = accelerator.is_main_process
+
     torch.manual_seed(args.seed)
-    device = args.device
+    device = accelerator.device
     os.makedirs(args.output_dir, exist_ok=True)
 
     if args.use_wandb:
@@ -490,7 +524,7 @@ def main(args: Args):
         model.load_state_dict(resume_ckpt["model"])
         resume_wandb_run_id = resume_ckpt.get("wandb_run_id")
 
-    if args.use_wandb:
+    if args.use_wandb and is_main:
         wandb.init(
             project=args.wandb_project, entity=args.wandb_entity,
             name=args.wandb_run_name or os.path.basename(os.path.normpath(args.output_dir)),
@@ -502,29 +536,39 @@ def main(args: Args):
                   f"(saved before this feature existed?) -- this will start a NEW wandb run "
                   f"rather than continuing the original one's chart history.")
 
+    # A barrier only resolves if every rank calls it -- gating the call itself behind `is_main`
+    # (rather than just the save below it) would make rank 0 wait forever for ranks that skipped
+    # the call entirely. args.resume_from/args.smoke_test_steps are identical on every rank (same
+    # CLI args everywhere), so gating the barrier on those alone introduces no cross-rank
+    # asymmetry -- only `is_main` would.
     if args.resume_from is None and args.smoke_test_steps is None:
-        # Save the exact pre-training state (pretrained backbone + freshly-initialized 23-dim
-        # action layer) as step_000000.pt -- the correct "before" baseline for measuring whether
-        # fine-tuning helped. The original 25-dim pretrained checkpoint is NOT a valid "before"
-        # baseline by itself: it can't even consume Craftium's 23-dim actions, so comparing
-        # against it would conflate "the action layer was never trained" with "fine-tuning
-        # didn't help" -- this step-0 checkpoint isolates the latter question cleanly. Skipped
-        # when resuming -- that step-0 checkpoint already exists from the original run.
-        step0_path = os.path.join(args.output_dir, "step_000000.pt")
-        torch.save({
-            "model": model.state_dict(), "step": 0, "args": vars(args),
-            "wandb_run_id": wandb.run.id if args.use_wandb else None,
-        }, step0_path)
-        print(f"Saved pre-training checkpoint (pretrained backbone + fresh 23-dim action layer) to {step0_path}")
+        accelerator.wait_for_everyone()
+        if is_main:
+            # Save the exact pre-training state (pretrained backbone + freshly-initialized 23-dim
+            # action layer) as step_000000.pt -- the correct "before" baseline for measuring whether
+            # fine-tuning helped. The original 25-dim pretrained checkpoint is NOT a valid "before"
+            # baseline by itself: it can't even consume Craftium's 23-dim actions, so comparing
+            # against it would conflate "the action layer was never trained" with "fine-tuning
+            # didn't help" -- this step-0 checkpoint isolates the latter question cleanly. Skipped
+            # when resuming -- that step-0 checkpoint already exists from the original run.
+            step0_path = os.path.join(args.output_dir, "step_000000.pt")
+            torch.save({
+                "model": accelerator.unwrap_model(model).state_dict(), "step": 0, "args": vars(args),
+                "wandb_run_id": wandb.run.id if args.use_wandb else None,
+            }, step0_path)
+            print(f"Saved pre-training checkpoint (pretrained backbone + fresh 23-dim action layer) to {step0_path}")
 
     model.train()
 
     dataset = CraftiumOasisDataset(
-        args.split_path, "train", window_len=args.window_len,
+        args.split_path, "train", window_len=args.window_len, dataset_root=args.dataset_root,
         use_oasis_native_action_layout=args.use_oasis_native_action_layout, mode="sliding",
     )
+    # accelerator.prepare(loader) below automatically replaces the sampler with a
+    # distributed-and-shuffling-aware one when running under multiple processes, and leaves this
+    # plain RandomSampler untouched for a single process -- no manual DistributedSampler needed.
     loader = DataLoader(
-        dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, drop_last=True
+        dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, drop_last=True,
     )
 
     # Fixed val / train-eval loaders for the cheap one-step-ahead check (see Args.val_every).
@@ -540,19 +584,20 @@ def main(args: Args):
     val_loader = train_eval_loader = None
     if run_validation:
         val_dataset = CraftiumOasisDataset(
-            args.split_path, "val", window_len=args.window_len,
+            args.split_path, "val", window_len=args.window_len, dataset_root=args.dataset_root,
             use_oasis_native_action_layout=args.use_oasis_native_action_layout, mode="fixed",
         )
         train_eval_dataset = CraftiumOasisDataset(
-            args.split_path, "train_eval", window_len=args.window_len,
+            args.split_path, "train_eval", window_len=args.window_len, dataset_root=args.dataset_root,
             use_oasis_native_action_layout=args.use_oasis_native_action_layout, mode="fixed",
         )
         val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
         train_eval_loader = DataLoader(
             train_eval_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers
         )
-        print(f"Validation enabled: {len(val_dataset)} val windows, {len(train_eval_dataset)} "
-              f"train-eval windows, checked every {args.val_every} steps.")
+        if is_main:
+            print(f"Validation enabled: {len(val_dataset)} val windows, {len(train_eval_dataset)} "
+                  f"train-eval windows, checked every {args.val_every} steps.")
 
     # Instantiated once and reused across every val/train-eval check (LPIPS loads a pretrained
     # AlexNet backbone -- recreating it every check would repeatedly reload those weights for no
@@ -577,13 +622,15 @@ def main(args: Args):
             for p in adaln_params:
                 p.requires_grad_(True)
             param_groups.append({"params": adaln_params, "lr": args.lr_adaln})
-            print(f"unfreeze_adaln=True: also training {sum(p.numel() for p in adaln_params):,} "
-                  f"adaLN-modulation params")
+            if is_main:
+                print(f"unfreeze_adaln=True: also training {sum(p.numel() for p in adaln_params):,} "
+                      f"adaLN-modulation params")
         optimizer = torch.optim.AdamW(param_groups)
         n_frozen = sum(p.numel() for p in pretrained_params if not p.requires_grad)
-        print(f"freeze_backbone=True: {n_frozen:,} backbone params frozen, training "
-              f"{sum(p.numel() for p in new_layer_params):,} action-layer params"
-              + (f" + adaLN params" if args.unfreeze_adaln else ""))
+        if is_main:
+            print(f"freeze_backbone=True: {n_frozen:,} backbone params frozen, training "
+                  f"{sum(p.numel() for p in new_layer_params):,} action-layer params"
+                  + (f" + adaLN params" if args.unfreeze_adaln else ""))
     else:
         optimizer = torch.optim.AdamW(
             [
@@ -604,7 +651,16 @@ def main(args: Args):
         optimizer.load_state_dict(resume_ckpt["optimizer"])
         scheduler.load_state_dict(resume_ckpt["scheduler"])
         start_step = resume_ckpt["step"]
-        print(f"Resumed model + optimizer + scheduler from {args.resume_from} at step {start_step}")
+        if is_main:
+            print(f"Resumed model + optimizer + scheduler from {args.resume_from} at step {start_step}")
+
+    # Prepared only now, after param-group extraction and optimizer/scheduler construction above --
+    # accelerate's DDP wrapper doesn't expose the underlying module's attributes (e.g.
+    # `.external_cond`) directly, so building param groups against it would break. `model` becomes
+    # the (possibly DDP-wrapped) prepared object from here on; every checkpoint save below goes
+    # through accelerator.unwrap_model(model) to keep the saved state dict flat and
+    # "module."-prefix-free, since the 6 downstream eval scripts do a strict load of it.
+    model, optimizer, loader = accelerator.prepare(model, optimizer, loader)
 
     betas = sigmoid_beta_schedule(1000).float().to(device)
     alphas_cumprod = torch.cumprod(1.0 - betas, dim=0)  # (1000,)
@@ -614,8 +670,15 @@ def main(args: Args):
     step = start_step
     t0 = time.time()
     step_times = []
-    pbar = tqdm(total=total_steps, initial=start_step, desc="Fine-tuning Oasis")
+    pbar = tqdm(total=total_steps, initial=start_step, desc="Fine-tuning Oasis", disable=not is_main)
+    epoch = 0
     while step < total_steps:
+        # Reshuffles the sliding-window pool deterministically per epoch (and per rank under
+        # multiple processes, via the sampler accelerator.prepare(loader) installed) -- a no-op
+        # attribute check rather than an is_distributed branch, since prepare() only attaches
+        # set_epoch when it actually replaced the sampler with a distributed one.
+        if hasattr(loader, "set_epoch"):
+            loader.set_epoch(epoch)
         for frames, actions in loader:
             if step >= total_steps:
                 break
@@ -624,94 +687,115 @@ def main(args: Args):
             actions = actions.to(device, non_blocking=True)  # (B, T, 23)
             B, T = frames.shape[:2]
 
-            with torch.no_grad():
-                flat = rearrange(frames, "b t c h w -> (b t) c h w")
-                with torch.autocast("cuda", dtype=torch.bfloat16):
-                    latents = vae.encode(flat * 2 - 1).mean * scaling_factor
-                latents = rearrange(latents.float(), "(b t) (h w) c -> b t c h w", t=T, h=18, w=32)
+            with accelerator.accumulate(model):
+                with torch.no_grad():
+                    flat = rearrange(frames, "b t c h w -> (b t) c h w")
+                    with accelerator.autocast():
+                        latents = vae.encode(flat * 2 - 1).mean * scaling_factor
+                    latents = rearrange(latents.float(), "(b t) (h w) c -> b t c h w", t=T, h=18, w=32)
 
-            # Diffusion Forcing: independent random noise level per frame (see module docstring).
-            t_idx = torch.randint(0, 1000, (B, T), device=device)
-            noise = torch.randn_like(latents)
-            ac = alphas_cumprod[t_idx].view(B, T, 1, 1, 1)
-            x_t = ac.sqrt() * latents + (1 - ac).sqrt() * noise
-            v_target = ac.sqrt() * noise - (1 - ac).sqrt() * latents
+                # Diffusion Forcing: independent random noise level per frame (see module docstring).
+                t_idx = torch.randint(0, 1000, (B, T), device=device)
+                noise = torch.randn_like(latents)
+                ac = alphas_cumprod[t_idx].view(B, T, 1, 1, 1)
+                x_t = ac.sqrt() * latents + (1 - ac).sqrt() * noise
+                v_target = ac.sqrt() * noise - (1 - ac).sqrt() * latents
 
-            with torch.autocast("cuda", dtype=torch.bfloat16):
-                v_pred = model(x_t, t_idx, actions)
-                loss = F.mse_loss(v_pred.float(), v_target)
+                with accelerator.autocast():
+                    v_pred = model(x_t, t_idx, actions)
+                    loss = F.mse_loss(v_pred.float(), v_target)
 
-            optimizer.zero_grad(set_to_none=True)
-            loss.backward()
-            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip_norm)
-            optimizer.step()
-            scheduler.step()
+                accelerator.backward(loss)
+                if accelerator.sync_gradients:
+                    grad_norm = accelerator.clip_grad_norm_(model.parameters(), args.grad_clip_norm)
+                # Both stay unconditional here -- accelerate's prepared optimizer internally
+                # no-ops step()/zero_grad() on non-final micro-steps of an accumulation group.
+                optimizer.step()
+                optimizer.zero_grad(set_to_none=True)
 
-            torch.cuda.synchronize()
-            step_times.append(time.time() - step_start)
-            step += 1
-            pbar.update(1)
-            if step % args.log_every == 0:
-                pbar.set_postfix(loss=f"{loss.item():.4f}", grad_norm=f"{grad_norm.item():.2f}")
-                if args.use_wandb:
-                    wandb.log({"train/loss": loss.item(), "train/grad_norm": grad_norm.item()}, step=step)
+            if accelerator.sync_gradients:
+                scheduler.step()
+                torch.cuda.synchronize()
+                step_times.append(time.time() - step_start)
+                step += 1
+                pbar.update(1)
+                if step % args.log_every == 0:
+                    pbar.set_postfix(loss=f"{loss.item():.4f}", grad_norm=f"{grad_norm.item():.2f}")
+                    if args.use_wandb and is_main:
+                        wandb.log({"train/loss": loss.item(), "train/grad_norm": grad_norm.item()}, step=step)
 
-            if run_validation and step % args.val_every == 0:
-                model.eval()
-                val_metrics = compute_eval_metrics(
-                    model, vae, val_loader, device, alphas_cumprod, scaling_factor,
-                    ssim_metric, lpips_metric, ddim_steps=args.eval_ddim_steps,
-                )
-                train_eval_metrics = compute_eval_metrics(
-                    model, vae, train_eval_loader, device, alphas_cumprod, scaling_factor,
-                    ssim_metric, lpips_metric, ddim_steps=args.eval_ddim_steps,
-                )
-                model.train()
-                print(f"[step {step}] val: loss={val_metrics['loss']:.4f} psnr={val_metrics['psnr']:.2f}dB "
-                      f"ssim={val_metrics['ssim']:.4f} lpips={val_metrics['lpips']:.4f}  "
-                      f"train_eval: loss={train_eval_metrics['loss']:.4f} psnr={train_eval_metrics['psnr']:.2f}dB "
-                      f"ssim={train_eval_metrics['ssim']:.4f} lpips={train_eval_metrics['lpips']:.4f}")
-                if args.use_wandb:
-                    wandb.log({
-                        "val/loss": val_metrics["loss"], "val/psnr": val_metrics["psnr"],
-                        "val/ssim": val_metrics["ssim"], "val/lpips": val_metrics["lpips"],
-                        "train_eval/loss": train_eval_metrics["loss"], "train_eval/psnr": train_eval_metrics["psnr"],
-                        "train_eval/ssim": train_eval_metrics["ssim"], "train_eval/lpips": train_eval_metrics["lpips"],
-                    }, step=step)
+                if run_validation and step % args.val_every == 0:
+                    # Only rank 0 validates now (compute_eval_metrics is @torch.no_grad(), so no
+                    # autograd graph is built and DDP's reducer hooks never fire -- unlike backward(),
+                    # a forward-only call has no cross-rank collective to desync, so this is safe
+                    # unlike it would be for anything that calls .backward()). wait_for_everyone()
+                    # below is what actually keeps other ranks from racing ahead into the next
+                    # training step while rank 0 is still validating alone.
+                    if is_main:
+                        unwrapped_model = accelerator.unwrap_model(model)
+                        unwrapped_model.eval()
+                        val_metrics = compute_eval_metrics(
+                            unwrapped_model, vae, val_loader, device, alphas_cumprod, scaling_factor,
+                            ssim_metric, lpips_metric, accelerator, ddim_steps=args.eval_ddim_steps,
+                        )
+                        train_eval_metrics = compute_eval_metrics(
+                            unwrapped_model, vae, train_eval_loader, device, alphas_cumprod, scaling_factor,
+                            ssim_metric, lpips_metric, accelerator, ddim_steps=args.eval_ddim_steps,
+                        )
+                        unwrapped_model.train()
+                        print(f"[step {step}] val: loss={val_metrics['loss']:.4f} psnr={val_metrics['psnr']:.2f}dB "
+                              f"ssim={val_metrics['ssim']:.4f} lpips={val_metrics['lpips']:.4f}  "
+                              f"train_eval: loss={train_eval_metrics['loss']:.4f} psnr={train_eval_metrics['psnr']:.2f}dB "
+                              f"ssim={train_eval_metrics['ssim']:.4f} lpips={train_eval_metrics['lpips']:.4f}")
+                        if args.use_wandb:
+                            wandb.log({
+                                "val/loss": val_metrics["loss"], "val/psnr": val_metrics["psnr"],
+                                "val/ssim": val_metrics["ssim"], "val/lpips": val_metrics["lpips"],
+                                "train_eval/loss": train_eval_metrics["loss"], "train_eval/psnr": train_eval_metrics["psnr"],
+                                "train_eval/ssim": train_eval_metrics["ssim"], "train_eval/lpips": train_eval_metrics["lpips"],
+                            }, step=step)
+                    accelerator.wait_for_everyone()
 
-            if args.smoke_test_steps is None and step % args.checkpoint_every == 0:
-                ckpt_path = os.path.join(args.output_dir, f"step_{step:06d}.pt")
-                torch.save({
-                    "model": model.state_dict(), "optimizer": optimizer.state_dict(),
-                    "scheduler": scheduler.state_dict(), "step": step, "args": vars(args),
-                    "wandb_run_id": wandb.run.id if args.use_wandb else None,
-                }, ckpt_path)
-                if args.use_wandb:
-                    wandb.log({"checkpoint_step": step}, step=step)
+                if args.smoke_test_steps is None and step % args.checkpoint_every == 0:
+                    accelerator.wait_for_everyone()
+                    if is_main:
+                        ckpt_path = os.path.join(args.output_dir, f"step_{step:06d}.pt")
+                        torch.save({
+                            "model": accelerator.unwrap_model(model).state_dict(), "optimizer": optimizer.state_dict(),
+                            "scheduler": scheduler.state_dict(), "step": step, "args": vars(args),
+                            "wandb_run_id": wandb.run.id if args.use_wandb else None,
+                        }, ckpt_path)
+                        if args.use_wandb:
+                            wandb.log({"checkpoint_step": step}, step=step)
 
     pbar.close()
     elapsed = time.time() - t0
     mean_step_time = sum(step_times) / len(step_times)
-    peak_mem_gb = torch.cuda.max_memory_allocated(device) / 1e9
+    peak_mem_gb = torch.cuda.max_memory_allocated(device) / 1e9  # this rank's own GPU only
 
-    print(f"\n=== Run summary (for the paper's conditions log) ===")
-    print(f"Device: {torch.cuda.get_device_name(device)}")
-    print(f"Steps: {step}, batch_size={args.batch_size}, window_len={args.window_len}")
-    print(f"Total wall-clock: {elapsed:.1f}s, mean step time: {mean_step_time:.3f}s/step "
-          f"({1/mean_step_time:.2f} steps/s)")
-    print(f"Peak GPU memory allocated: {peak_mem_gb:.2f} GB")
-    print(f"Final loss: {loss.item():.4f}")
+    if is_main:
+        print(f"\n=== Run summary (for the paper's conditions log) ===")
+        print(f"Device: {torch.cuda.get_device_name(device)}"
+              + (f" x{accelerator.num_processes} ({accelerator.distributed_type})" if accelerator.num_processes > 1 else ""))
+        print(f"Steps: {step}, batch_size={args.batch_size} per GPU"
+              + (f", grad_accumulation_steps={args.grad_accumulation_steps}" if args.grad_accumulation_steps > 1 else "")
+              + f", window_len={args.window_len}")
+        print(f"Total wall-clock: {elapsed:.1f}s, mean step time: {mean_step_time:.3f}s/step "
+              f"({1/mean_step_time:.2f} steps/s)")
+        print(f"Peak GPU memory allocated (rank 0): {peak_mem_gb:.2f} GB")
+        print(f"Final loss: {loss.item():.4f}")
 
-    if args.smoke_test_steps is None:
+    accelerator.wait_for_everyone()
+    if is_main and args.smoke_test_steps is None:
         final_path = os.path.join(args.output_dir, "final.pt")
         torch.save({
-            "model": model.state_dict(), "optimizer": optimizer.state_dict(),
+            "model": accelerator.unwrap_model(model).state_dict(), "optimizer": optimizer.state_dict(),
             "scheduler": scheduler.state_dict(), "step": step, "args": vars(args),
             "wandb_run_id": wandb.run.id if args.use_wandb else None,
         }, final_path)
         print(f"Saved final checkpoint to {final_path}")
 
-    if args.use_wandb:
+    if args.use_wandb and is_main:
         wandb.log({
             "summary/peak_gpu_mem_gb": peak_mem_gb, "summary/mean_step_time_s": mean_step_time,
         }, step=step)
