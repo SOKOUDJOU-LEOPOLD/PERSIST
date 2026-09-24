@@ -45,6 +45,11 @@ env = [
   "craftium",
   "gymnasium==0.29.1",
 ]
+worldmem = [
+  "omegaconf~=2.3.0",
+  "lightning~=2.1.2",
+  "rotary_embedding_torch",
+]
 
 [tool.uv]
 default-groups = []

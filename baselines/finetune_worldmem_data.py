@@ -70,7 +70,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "Wor
 from algorithms.worldmem.df_video import generate_points_in_sphere, is_inside_fov_3d_hv  # noqa: E402
 
 DATASET_ROOT = (
-    "/home/lsokoudj/.cache/huggingface/hub/datasets--PERSIST-team--persist-eval-sample/"
+    "/scratch/user/lsokoudj/.cache/huggingface/hub/datasets--PERSIST-team--persist-eval-sample/"
     "snapshots/d3a3bee6560304397093ae66523451b9e0d067f7"
 )
 
