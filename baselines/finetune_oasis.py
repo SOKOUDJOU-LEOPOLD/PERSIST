@@ -528,7 +528,10 @@ def main(args: Args):
         wandb.init(
             project=args.wandb_project, entity=args.wandb_entity,
             name=args.wandb_run_name or os.path.basename(os.path.normpath(args.output_dir)),
-            config=vars(args),
+            # world_size/effective_batch recorded explicitly: a resumed run may continue on a different
+            # GPU layout (see run_multinode.slurm), with batch_size/grad_accumulation_steps rescaled.
+            config={**vars(args), "world_size": accelerator.num_processes,
+                    "effective_batch": args.batch_size * args.grad_accumulation_steps * accelerator.num_processes},
             id=resume_wandb_run_id, resume="must" if resume_wandb_run_id else None,
         )
         if args.resume_from is not None and resume_wandb_run_id is None:
