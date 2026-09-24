@@ -1,7 +1,8 @@
 #!/bin/bash
 #SBATCH --job-name=oasis-luanti-1000ep
 #SBATCH --partition=gpu
-#SBATCH --gres=gpu:a100:4
+#SBATCH --gres=gpu:a10:4
+#SBATCH --nodelist=fc122
 #SBATCH --nodes=1
 #SBATCH --time=10:00:00
 #SBATCH --cpus-per-task=32
@@ -9,7 +10,9 @@
 #SBATCH --mail-type=BEGIN,END,FAIL
 #SBATCH --output=../outputs/finetune_oasis_luanti_1000ep/slurm_%j.log
 # Submit from baselines/ (the --output path and all relative paths below assume it):
-#   cd baselines && sbatch run_luanti_1000ep_resume.slurm
+#   cd baselines && sbatch run_luanti_1000ep_resume_a10.slurm
+# 4x A10 (24GB) variant: --batch-size 1 x --grad-accumulation-steps 4 x 4 GPUs = 16 samples per
+# optimizer step, identical to the original 4 GPUs x batch 4 -- steps/LR schedule unchanged.
 # Resumes from the newest complete step_*.pt in OUT_DIR, so the same file can be resubmitted after
 # every 10h timeout. Override with: sbatch --export=ALL,RESUME=../outputs/.../step_XXXXXX.pt ...
 
@@ -27,6 +30,7 @@ export WANDB_DIR=$OUT_DIR
 export TORCH_HOME=/scratch/user/subarna_tamu.2026/.cache/torch
 export PYTHONUNBUFFERED=1  # flush print() immediately so the slurm log and the wandb Logs tab stay current
 export HF_HOME=/scratch/user/subarna_tamu.2026/.hf
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 source $REPO/.venv/bin/activate
 cd $REPO/baselines
@@ -54,6 +58,7 @@ accelerate launch --multi_gpu --mixed_precision bf16 --num_processes 4 finetune_
     --resume-from $RESUME \
     --use-oasis-native-action-layout \
     --informed-action-init \
+    --batch-size 1 --grad-accumulation-steps 4 \
     --lr-pretrained 1e-6 --lr-new-layer 1e-4 \
     --num-steps 100000 --checkpoint-every 500 --val-every 100 \
     --wandb-run-name oasis-luanti-1000ep

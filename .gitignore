@@ -3,6 +3,7 @@ wip/
 
 ## Datasets, data generation
 datasets/
+data/
 minetest-run*/
 
 ## Model weights and checkpoints

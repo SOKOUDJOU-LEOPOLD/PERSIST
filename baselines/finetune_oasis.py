@@ -653,6 +653,10 @@ def main(args: Args):
         start_step = resume_ckpt["step"]
         if is_main:
             print(f"Resumed model + optimizer + scheduler from {args.resume_from} at step {start_step}")
+        # Everything has been copied out of it by now -- dropping it frees the whole multi-GB
+        # checkpoint (loaded onto `device`) instead of holding it in GPU memory for the entire run.
+        del resume_ckpt
+        torch.cuda.empty_cache()
 
     # Prepared only now, after param-group extraction and optimizer/scheduler construction above --
     # accelerate's DDP wrapper doesn't expose the underlying module's attributes (e.g.
