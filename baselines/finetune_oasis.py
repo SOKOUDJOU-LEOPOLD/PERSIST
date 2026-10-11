@@ -436,6 +436,10 @@ class Args:
     not actually guaranteed (GPU float ops aren't bit-exact reproducible even with a fixed seed) --
     this loads the real optimizer state (Adam moments, LR schedule position) rather than
     re-deriving it."""
+    fresh_wandb_run: bool = False
+    """When resuming (--resume-from set), start a brand-new wandb run instead of continuing the
+    checkpoint's embedded wandb_run_id -- e.g. when moving a run to a different machine mid-flight
+    and deliberately wanting a clean run boundary rather than one history spanning two machines."""
     smoke_test_steps: Optional[int] = None
     """If set, overrides num_steps and skips checkpointing -- just times N real steps to measure
     throughput/memory, per the plan's 'timed smoke test before committing to a full run' step."""
@@ -488,7 +492,8 @@ def main(args: Args):
     if args.resume_from is not None:
         resume_ckpt = torch.load(args.resume_from, map_location=device, weights_only=False)
         model.load_state_dict(resume_ckpt["model"])
-        resume_wandb_run_id = resume_ckpt.get("wandb_run_id")
+        if not args.fresh_wandb_run:
+            resume_wandb_run_id = resume_ckpt.get("wandb_run_id")
 
     if args.use_wandb:
         wandb.init(
