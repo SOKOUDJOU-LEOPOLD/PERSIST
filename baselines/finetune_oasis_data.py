@@ -22,7 +22,7 @@ import torch
 from torch.utils.data import Dataset
 
 DATASET_ROOT = (
-    "/home/lsokoudj/.cache/huggingface/hub/datasets--PERSIST-team--persist-eval-sample/"
+    "/scratch/user/lsokoudj/.cache/huggingface/hub/datasets--PERSIST-team--persist-eval-sample/"
     "snapshots/d3a3bee6560304397093ae66523451b9e0d067f7"
 )
 
