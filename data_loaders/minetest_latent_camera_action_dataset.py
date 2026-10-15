@@ -598,7 +598,12 @@ class MinetestLatentCameraActionEval(MinetestLatentCameraAction):
 
     def filter_metadata(self, metadata, instances=None):
         stats = {}
-        metadata = metadata[metadata["validation_set"] == True]
+        # Only the no-explicit-instances default (self.split == 'val', set by __init__) restricts
+        # to the validation split. When explicit sha256 instances are requested, honor exactly
+        # those hashes regardless of which split they belong to (train or val) -- matching the
+        # documented --eval-instances contract instead of silently intersecting with val-only rows.
+        if self.split == "val":
+            metadata = metadata[metadata["validation_set"] == True]
         stats['Available samples'] = len(metadata)
         metadata = metadata[metadata['level_quality_score'] >= self.min_level_quality_score]
         stats[f'Level quality score >= {self.min_level_quality_score}'] = len(metadata)

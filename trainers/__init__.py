@@ -60,6 +60,38 @@ class BaseTrainingArgs:
     ema_update_every: int = 1
     """Update EMA every N optimizer steps (after gradient sync)."""
 
+    pretrained_checkpoint: str | None = None
+    """Path to a raw model.safetensors to initialize weights from before training starts
+    (weight-only load, step counter stays at 0 -- distinct from --resume, which restores
+    step/optimizer/RNG state too, for resuming THIS run after an interruption)."""
+
+    pretrained_checkpoint_model_key: str = "denoiser"
+    """Key into self.models to load pretrained_checkpoint into."""
+
+    pretrained_checkpoint_extra: str | None = None
+    """Optional second raw model.safetensors to load into a second model key (see
+    pretrained_checkpoint_extra_model_key) -- e.g. the pixel denoiser's voxel_class_embedder,
+    which has no other loading path and is otherwise always randomly initialized."""
+
+    pretrained_checkpoint_extra_model_key: str | None = None
+    """Key into self.models for pretrained_checkpoint_extra. Required if pretrained_checkpoint_extra is set."""
+
+    use_wandb: bool = False
+    """Whether to log metrics to Weights & Biases. Default off so existing non-finetune configs
+    are unaffected."""
+
+    wandb_project: str = "persist-finetune"
+
+    wandb_entity: str | None = "leopoldgatsing-texas-a-m-university"
+
+    wandb_run_name: str | None = None
+    """Defaults to run_id if not set."""
+
+    full_pass_validation: bool = False
+    """If True, each validation check iterates the ENTIRE val_dataloader (averaging loss/metrics
+    across all val episodes) instead of drawing one random batch via next() on an infinite
+    iterator. Default off so existing non-finetune configs/runs are unaffected."""
+
     # ---- Arguments to be filled in at runtime ----
     run_id: Fixed[str | None] = None
     """Unique identifier for this training run."""
@@ -208,6 +240,34 @@ class BaseTrainer:
     def prepare_models(self):
         raise NotImplementedError("Needs to be implemented in subclass.")
 
+    def load_pretrained_checkpoint(self):
+        """Weight-only load from self.cfg.pretrained_checkpoint (+ optional
+        pretrained_checkpoint_extra) into self.models, for FINE-TUNING from an existing
+        checkpoint. Must be called after prepare_models() (so self.models exists) and before
+        prepare_accelerate() (so weights land in the raw, unwrapped model and the step counter
+        is untouched) -- distinct from the resume path in load_state(), which always restores the
+        step counter too, for resuming THIS run after an interruption rather than starting a new
+        run from existing weights.
+        """
+        if self.cfg.pretrained_checkpoint is None:
+            return
+        from safetensors.torch import load_file
+
+        def _load_into(path, key):
+            checkpoint = load_file(path)
+            if checkpoint and next(iter(checkpoint)).startswith("_orig_mod."):
+                checkpoint = {k[len("_orig_mod."):]: v for k, v in checkpoint.items()}
+            missing, unexpected = self.models[key].load_state_dict(checkpoint, strict=False)
+            logger.info(f"Loaded pretrained weights for '{key}' from {path} "
+                        f"(missing={len(missing)}, unexpected={len(unexpected)})")
+
+        _load_into(self.cfg.pretrained_checkpoint, self.cfg.pretrained_checkpoint_model_key)
+        if self.cfg.pretrained_checkpoint_extra is not None:
+            assert self.cfg.pretrained_checkpoint_extra_model_key is not None, (
+                "pretrained_checkpoint_extra_model_key must be set when pretrained_checkpoint_extra is set"
+            )
+            _load_into(self.cfg.pretrained_checkpoint_extra, self.cfg.pretrained_checkpoint_extra_model_key)
+
     def training_losses(self, batch, verbose=True) -> Tuple[Dict, Dict]:
         raise NotImplementedError("Needs to be implemented in subclass.")
 
@@ -218,6 +278,13 @@ class BaseTrainer:
         metrics = defaultdict(float)  # Store main-rank metrics other than loss
         data_iterator = infinite_loader(self.dataloader)
         val_data_iterator = infinite_loader(self.val_dataloader)
+
+        if self.cfg.use_wandb and self.accelerator.is_main_process:
+            import wandb
+            wandb.init(
+                project=self.cfg.wandb_project, entity=self.cfg.wandb_entity,
+                name=self.cfg.wandb_run_name or self.cfg.run_id, config=vars(self.cfg),
+            )
 
         logger.info("Training starts ...")
         self.models.train()
@@ -280,12 +347,28 @@ class BaseTrainer:
             if self.i_val > 0 and self.step % self.i_val == 0:
                 del batch
                 with torch.no_grad(), self.accelerator.autocast():
-                    val_batch = next(val_data_iterator)
-                    val_batch = accelerate_send_to_device(val_batch, self.accelerator.device, non_blocking=True)
-                    val_losses, status = self.training_losses(val_batch, verbose=True)
-                for k, v in val_losses.items():
-                    metrics[f"val_loss/{k}"] += v.mean().float().cpu().item() / max(self.i_log // self.i_val, 1)
-                del val_batch
+                    if self.cfg.full_pass_validation:
+                        # Full pass over the ENTIRE val_dataloader (e.g. all 15 fixed val
+                        # episodes), averaged -- not just one random batch via next() on an
+                        # infinite iterator. Opt-in (see full_pass_validation docstring) so
+                        # existing non-finetune runs keep today's lightweight behavior.
+                        val_accum = defaultdict(float)
+                        n_val_batches = 0
+                        for val_batch in self.val_dataloader:
+                            val_batch = accelerate_send_to_device(val_batch, self.accelerator.device, non_blocking=True)
+                            val_losses, status = self.training_losses(val_batch, verbose=True)
+                            for k, v in val_losses.items():
+                                val_accum[k] += v.mean().float().cpu().item()
+                            n_val_batches += 1
+                        for k, v in val_accum.items():
+                            metrics[f"val_loss/{k}"] += (v / max(n_val_batches, 1)) / max(self.i_log // self.i_val, 1)
+                    else:
+                        val_batch = next(val_data_iterator)
+                        val_batch = accelerate_send_to_device(val_batch, self.accelerator.device, non_blocking=True)
+                        val_losses, status = self.training_losses(val_batch, verbose=True)
+                        for k, v in val_losses.items():
+                            metrics[f"val_loss/{k}"] += v.mean().float().cpu().item() / max(self.i_log // self.i_val, 1)
+                        del val_batch
 
             # # Gather losses across ranks only when logging
             self.accelerator.wait_for_everyone()
@@ -303,6 +386,8 @@ class BaseTrainer:
                     logger.info(f"[step {self.step} | grad_step {self.grad_step}] {msg}")
                     if "loss/loss" in loss2log:
                         progress_bar.set_postfix(loss=loss2log["loss/loss"])
+                    if self.cfg.use_wandb:
+                        wandb.log(log_values, step=self.step)
                 metrics.clear()
                 gc.collect()
 
@@ -330,6 +415,8 @@ class BaseTrainer:
         progress_bar.close()
         if self.accelerator.is_main_process:
             logger.info("Training finished.")
+            if self.cfg.use_wandb:
+                wandb.finish()
 
     def init_distributed(self):
         self.device = self.accelerator.device

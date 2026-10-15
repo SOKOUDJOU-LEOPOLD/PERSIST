@@ -328,6 +328,7 @@ def main(args):
     trainer = VoxelDiffuserTrainer(args, accelerator)
     trainer.prepare_dataset()
     trainer.prepare_models()
+    trainer.load_pretrained_checkpoint()
     trainer.prepare_trainable_parameters()
     trainer.prepare_optimizer()
     trainer.prepare_accelerate()

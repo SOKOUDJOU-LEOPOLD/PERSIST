@@ -1,0 +1,1062 @@
+{
+  "seed": 0,
+  "repo_id": "percool/luanti",
+  "sources": {
+    "s1nav": {
+      "splits_file": "motworld-s1nav-10k.splits.json",
+      "splits_file_local_path": "/home/lsokoudj/.cache/huggingface/hub/datasets--percool--luanti/snapshots/480c7f459af7d7c3807054bcc5a5184708535650/motworld-s1nav-10k.splits.json",
+      "archive": "motworld-s1nav-10k.tar.zst",
+      "env_id": "OpenWorldCreative-v0",
+      "train_pool_size": 9463,
+      "n_train_selected": 50,
+      "n_val_selected": 8,
+      "n_spare_train": 5,
+      "n_spare_val": 2
+    },
+    "hudnav": {
+      "splits_file": "motworld-hudnav-20k.splits.json",
+      "splits_file_local_path": "/home/lsokoudj/.cache/huggingface/hub/datasets--percool--luanti/snapshots/480c7f459af7d7c3807054bcc5a5184708535650/motworld-hudnav-20k.splits.json",
+      "archive": "motworld-hudnav-20k.tar.zst",
+      "env_id": "OpenWorldCreativeHud-v0",
+      "train_pool_size": 19545,
+      "n_train_selected": 50,
+      "n_val_selected": 7,
+      "n_spare_train": 5,
+      "n_spare_val": 2
+    }
+  },
+  "episodes": [
+    {
+      "name": "1641895856",
+      "sha256": "45dd49a7346908627d3aedad32bc7a40438010c549998459c30a4bdc9572873a",
+      "split": "train",
+      "source": "s1nav",
+      "env_id": "OpenWorldCreative-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "565114608",
+      "sha256": "c82a698e5382952927c631bfb9ee09ac383ccb67f2c0f6bd5f98cd2873863358",
+      "split": "train",
+      "source": "s1nav",
+      "env_id": "OpenWorldCreative-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "1343709196",
+      "sha256": "6b929c7a7592fd173757ad6870ed2412b646b7ce8a4e13fa4ee2788a65c60132",
+      "split": "train",
+      "source": "s1nav",
+      "env_id": "OpenWorldCreative-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "1751597797",
+      "sha256": "24d670d82876636393f3099c9ff294bcf22c1e1de79c67d9a21b7f7476b75591",
+      "split": "train",
+      "source": "s1nav",
+      "env_id": "OpenWorldCreative-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "2016475066",
+      "sha256": "df12a0fa69ac459d1a93c6f4007f153d9c7c66551836e2b66179a9d4de63713d",
+      "split": "train",
+      "source": "s1nav",
+      "env_id": "OpenWorldCreative-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "1413113633",
+      "sha256": "b1ac5e0efa658ba037f72900dae4ccfa8a99418d67361e6a0cf4c5a8037f3620",
+      "split": "train",
+      "source": "s1nav",
+      "env_id": "OpenWorldCreative-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "872252759",
+      "sha256": "32ff0d605dce66cd5c510cf2195a5810c83579cde8ca34e0edff8bebf0fa14d8",
+      "split": "train",
+      "source": "s1nav",
+      "env_id": "OpenWorldCreative-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "1145335911",
+      "sha256": "8422d06f3a2329d2821a5cfa3ab340ed867d03ccd95be1925c53d82646d18a37",
+      "split": "train",
+      "source": "s1nav",
+      "env_id": "OpenWorldCreative-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "1464555241",
+      "sha256": "2b49a4c5bead38d97fbaa3cd94734f1edac1e1c771ad6088ba6cc16be7a40a6c",
+      "split": "train",
+      "source": "s1nav",
+      "env_id": "OpenWorldCreative-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "1257671998",
+      "sha256": "1dad2d6c57ac330738ff143cee71a1ff77941f9f799364b0efeb7100087980ff",
+      "split": "train",
+      "source": "s1nav",
+      "env_id": "OpenWorldCreative-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "2031173744",
+      "sha256": "0dfe75a7993d33031abac8eab6ae628081fb21f15721f822ecb74195412b6435",
+      "split": "train",
+      "source": "s1nav",
+      "env_id": "OpenWorldCreative-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "700343961",
+      "sha256": "d5b477160b8459bca23e6f1675727639459405a8da4754bfdc58369a77d693a6",
+      "split": "train",
+      "source": "s1nav",
+      "env_id": "OpenWorldCreative-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "898652189",
+      "sha256": "d4c232b80f7ccc1cb0831ffc004d630b5575f5acc86f6c4dcf10a257b49ad229",
+      "split": "train",
+      "source": "s1nav",
+      "env_id": "OpenWorldCreative-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "1764051453",
+      "sha256": "788d38ee709c52a31f6e8e5baa755441b0b36d5f06cd252bbb78bf6370501a97",
+      "split": "train",
+      "source": "s1nav",
+      "env_id": "OpenWorldCreative-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "412673397",
+      "sha256": "a2d983045e63868e33c7e1cccf264a00129ceb76b3c8201e9d98bf4480cb346f",
+      "split": "train",
+      "source": "s1nav",
+      "env_id": "OpenWorldCreative-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "1289157561",
+      "sha256": "a1c32b0605ae0be8c268b524e6a5ab1cdbf5d72c961ec64305d949153730bcfa",
+      "split": "train",
+      "source": "s1nav",
+      "env_id": "OpenWorldCreative-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "1441701347",
+      "sha256": "a142a5e4b83464b51f1249f8a6ce1e42a7e877f7bf8b279aa91b7ed10b11a762",
+      "split": "train",
+      "source": "s1nav",
+      "env_id": "OpenWorldCreative-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "2144540339",
+      "sha256": "ce02b0c3e846374d45e9a1f353bb4a4016483936afa9d2dffaaf92ba07497fd1",
+      "split": "train",
+      "source": "s1nav",
+      "env_id": "OpenWorldCreative-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "1561909718",
+      "sha256": "09e2406abc5002a6ef7cd45ac1b5ec1ea1c3043567febb127ee11c874de335fe",
+      "split": "train",
+      "source": "s1nav",
+      "env_id": "OpenWorldCreative-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "418624821",
+      "sha256": "ef998e3e5d8b8f804f4d86a4905a8d6e4556843674bf8dc0ed5d40c2636e66d0",
+      "split": "train",
+      "source": "s1nav",
+      "env_id": "OpenWorldCreative-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "446625380",
+      "sha256": "d5fa5413791e89ee577c24db69dd011546c8f775721de0b4fb8ebe25a337c8e9",
+      "split": "train",
+      "source": "s1nav",
+      "env_id": "OpenWorldCreative-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "1955082079",
+      "sha256": "16aa5008a94e777346548866c3b74e1b07310b8a089b1efac1e665e009c97ca2",
+      "split": "train",
+      "source": "s1nav",
+      "env_id": "OpenWorldCreative-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "68175710",
+      "sha256": "85a7acaaf21470000e6f4670577fcff020367866198a103e5914dadf373c8c7c",
+      "split": "train",
+      "source": "s1nav",
+      "env_id": "OpenWorldCreative-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "1632546545",
+      "sha256": "b8bb40fb5c23ab374a9757cea9faddb449e714b31e9d0ccc0b7162b2a4dc5a46",
+      "split": "train",
+      "source": "s1nav",
+      "env_id": "OpenWorldCreative-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "1449454309",
+      "sha256": "ccc296e4a3a140262fe14b2ec040a667627c01f087cad3b8fdd436e9ae3939fb",
+      "split": "train",
+      "source": "s1nav",
+      "env_id": "OpenWorldCreative-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "1741260428",
+      "sha256": "e6580aa3b4c1f528ec144428abd5446a78710c2c3b16a36da4702533ea3d7925",
+      "split": "train",
+      "source": "s1nav",
+      "env_id": "OpenWorldCreative-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "1911267685",
+      "sha256": "a47786a76bb434f552f302c1b07a58483852dda868bb5c6c14e205656830fabd",
+      "split": "train",
+      "source": "s1nav",
+      "env_id": "OpenWorldCreative-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "943319971",
+      "sha256": "05b9560680d9664ff7784b9e6886977c451c795b464d194f68ec74ffaf7d71ad",
+      "split": "train",
+      "source": "s1nav",
+      "env_id": "OpenWorldCreative-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "1580236923",
+      "sha256": "329ebc405de7768a64051fd3bc43c9f4bc24b6c5dd584c75d75fed0fc0e2730b",
+      "split": "train",
+      "source": "s1nav",
+      "env_id": "OpenWorldCreative-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "2089904289",
+      "sha256": "93db960f7c6cf327164ce7bb913ab71e2327446d5c3a6f2462713e5492faaa12",
+      "split": "train",
+      "source": "s1nav",
+      "env_id": "OpenWorldCreative-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "796351087",
+      "sha256": "8805d9e8b6fd8a550c5f4f9a61220c1b584228d31a15fde57e53639a7f3d93d5",
+      "split": "train",
+      "source": "s1nav",
+      "env_id": "OpenWorldCreative-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "323981445",
+      "sha256": "a5212ddb2f4411875b4d0fab737b9b121a9a3770f08ac63e755d49ea8209e183",
+      "split": "train",
+      "source": "s1nav",
+      "env_id": "OpenWorldCreative-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "460854402",
+      "sha256": "9d3a9690161b1e122b7aca29cb6ede7caca3e14dc6178eb4de2df4266fe15022",
+      "split": "train",
+      "source": "s1nav",
+      "env_id": "OpenWorldCreative-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "915858604",
+      "sha256": "29d453b0a4f9a13817823638bcbb04702cd05c3c9315e560589578526b4ef775",
+      "split": "train",
+      "source": "s1nav",
+      "env_id": "OpenWorldCreative-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "548828225",
+      "sha256": "3526a5ba8a613edb4ff7fcb840bedb5a7385dec5d8d156f225a48217acbff951",
+      "split": "train",
+      "source": "s1nav",
+      "env_id": "OpenWorldCreative-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "252581533",
+      "sha256": "62b12036e4dfeff544082df763342a7f8cc5431d1d2a02b6ba70011791df2da9",
+      "split": "train",
+      "source": "s1nav",
+      "env_id": "OpenWorldCreative-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "1066979269",
+      "sha256": "c5eb3048d25a2b07db586991609fd7e3b089a21026a4d8bddc2b40a408d3f07e",
+      "split": "train",
+      "source": "s1nav",
+      "env_id": "OpenWorldCreative-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "1944844997",
+      "sha256": "b6cbaf69b41e8a32605e92079583076c1414fd56b167d050ca89dbd949702032",
+      "split": "train",
+      "source": "s1nav",
+      "env_id": "OpenWorldCreative-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "1271314089",
+      "sha256": "67f9f268505d42b2217420be51c8ad2155933ac38b2310c20bb094fd632c5286",
+      "split": "train",
+      "source": "s1nav",
+      "env_id": "OpenWorldCreative-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "1620915483",
+      "sha256": "de67021438420ee60dc18b9c790b0ea24b4e6151b00e80eeb2d60bb678abd6cb",
+      "split": "train",
+      "source": "s1nav",
+      "env_id": "OpenWorldCreative-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "2060527198",
+      "sha256": "cb9d01dfa0dfb82286e40b9c71934b87de3377705469bc2057aea670bd638cf3",
+      "split": "train",
+      "source": "s1nav",
+      "env_id": "OpenWorldCreative-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "492789484",
+      "sha256": "c030170c421d98ac961eb1baf468a4d00b1357e8d733c8d7796cf539e10b1da5",
+      "split": "train",
+      "source": "s1nav",
+      "env_id": "OpenWorldCreative-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "462588663",
+      "sha256": "c015c71c6e79cacc2a9c4529a2bc62746d552ecf5d4bca0af34229c09e2b9fa6",
+      "split": "train",
+      "source": "s1nav",
+      "env_id": "OpenWorldCreative-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "952542363",
+      "sha256": "a302633310ab5aec57b7ab6c585982311c31c78b661866568429a9fd19607a44",
+      "split": "train",
+      "source": "s1nav",
+      "env_id": "OpenWorldCreative-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "1353733516",
+      "sha256": "57c3553f37b401b9a162413bd002609e8e387160d5aa756368ca9f72440688dc",
+      "split": "train",
+      "source": "s1nav",
+      "env_id": "OpenWorldCreative-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "450259501",
+      "sha256": "bffbb1a31c74151552cd1d96baa5f0126c49e50ea96216b256645511b6cac589",
+      "split": "train",
+      "source": "s1nav",
+      "env_id": "OpenWorldCreative-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "168310272",
+      "sha256": "9e87a0febf806a62bc7a077df09581ef0a7a2259d422a19430d2ef7e958c3eb2",
+      "split": "train",
+      "source": "s1nav",
+      "env_id": "OpenWorldCreative-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "1434368208",
+      "sha256": "0f4087a76b349de1b0457694e5720b6eec63564b94184021f8293686ae7ba470",
+      "split": "train",
+      "source": "s1nav",
+      "env_id": "OpenWorldCreative-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "932591339",
+      "sha256": "55ea122a93f9eaca47affb1256148022ef6aba65a39ff71f6f2ce4f7b2d1691a",
+      "split": "train",
+      "source": "s1nav",
+      "env_id": "OpenWorldCreative-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "116260413",
+      "sha256": "5e88125ec7d39f4548e868bd5740119431600f140a923392656e7f94a2eaae46",
+      "split": "train",
+      "source": "s1nav",
+      "env_id": "OpenWorldCreative-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "494556666",
+      "sha256": "56443b8917e7a8bab1782288e6640c0de403dd7aed68cb46439e1a2405d74d92",
+      "split": "train",
+      "source": "s1nav",
+      "env_id": "OpenWorldCreative-v0",
+      "split_role": "val"
+    },
+    {
+      "name": "1036109652",
+      "sha256": "1100cf0585a488a1c4c82529365777440b2721e7ac6b0353ceab2bacf2722c38",
+      "split": "train",
+      "source": "s1nav",
+      "env_id": "OpenWorldCreative-v0",
+      "split_role": "val"
+    },
+    {
+      "name": "1668183003",
+      "sha256": "f804ca317a5b91ad5d020625029f56799ad83e4a8fbbcee8e4ecd9a7b6665cef",
+      "split": "train",
+      "source": "s1nav",
+      "env_id": "OpenWorldCreative-v0",
+      "split_role": "val"
+    },
+    {
+      "name": "505336915",
+      "sha256": "046e90684787467cab3f0498fc48cee8b80f38b20c097ea25caea98f818f6872",
+      "split": "train",
+      "source": "s1nav",
+      "env_id": "OpenWorldCreative-v0",
+      "split_role": "val"
+    },
+    {
+      "name": "400663092",
+      "sha256": "072e256a44d5c3f48427e95a00b8664305e5b9fe32be4e6f8754f1fd64c8cff8",
+      "split": "train",
+      "source": "s1nav",
+      "env_id": "OpenWorldCreative-v0",
+      "split_role": "val"
+    },
+    {
+      "name": "165160868",
+      "sha256": "5e0ab7365abd51be1916f26d80385bacbaad721056dcb53c025a9db2a47b0500",
+      "split": "train",
+      "source": "s1nav",
+      "env_id": "OpenWorldCreative-v0",
+      "split_role": "val"
+    },
+    {
+      "name": "897145243",
+      "sha256": "5cdea5708610782dd468807460d04420931791f87b3adb7c24cb371fae1e8b43",
+      "split": "train",
+      "source": "s1nav",
+      "env_id": "OpenWorldCreative-v0",
+      "split_role": "val"
+    },
+    {
+      "name": "895210579",
+      "sha256": "641030c903f6618a8b8d2ce45c3f034b038614704d1b72412d608e645a943626",
+      "split": "train",
+      "source": "s1nav",
+      "env_id": "OpenWorldCreative-v0",
+      "split_role": "val"
+    },
+    {
+      "name": "424367779",
+      "sha256": "1aa3e0d9db12e2ef91c7782b82626d149b7998186be557af53e5f8059b1a0fcf",
+      "split": "train",
+      "source": "s1nav",
+      "env_id": "OpenWorldCreative-v0",
+      "split_role": "spare_train"
+    },
+    {
+      "name": "1431940112",
+      "sha256": "a71c424ff10c01df143998712de0489e56fb11a910d42e67d3ef6be0203dfc93",
+      "split": "train",
+      "source": "s1nav",
+      "env_id": "OpenWorldCreative-v0",
+      "split_role": "spare_train"
+    },
+    {
+      "name": "1408697729",
+      "sha256": "961219651dbbab0cabf5484da6a1f7dd5685e11c535f67164e9ce788f728d425",
+      "split": "train",
+      "source": "s1nav",
+      "env_id": "OpenWorldCreative-v0",
+      "split_role": "spare_train"
+    },
+    {
+      "name": "11610217",
+      "sha256": "11f26f8522099e247836e7b76f335c716d5101b2383ba59bb6babc14b9dab96c",
+      "split": "train",
+      "source": "s1nav",
+      "env_id": "OpenWorldCreative-v0",
+      "split_role": "spare_train"
+    },
+    {
+      "name": "1958864317",
+      "sha256": "505c589decdc50cb4a18564846822ba80cbadc1195ea8cb03dacfe4ed8ab6302",
+      "split": "train",
+      "source": "s1nav",
+      "env_id": "OpenWorldCreative-v0",
+      "split_role": "spare_train"
+    },
+    {
+      "name": "421646197",
+      "sha256": "338ba75ededbf79daad0b80a5f13f43a6f9761c56838b2356fbe289220898ec9",
+      "split": "train",
+      "source": "s1nav",
+      "env_id": "OpenWorldCreative-v0",
+      "split_role": "spare_val"
+    },
+    {
+      "name": "14814545",
+      "sha256": "cfd41bfafcfaa32e1bf0bc8273ae1fa961ef7e5030f36fa3edc10da43a7a00f9",
+      "split": "train",
+      "source": "s1nav",
+      "env_id": "OpenWorldCreative-v0",
+      "split_role": "spare_val"
+    },
+    {
+      "name": "1749311058",
+      "sha256": "7b42267d55df0cb4b784fbf1cb86c586e2fa74c8d0a1fe9c95452fb77cfdd31a",
+      "split": "train",
+      "source": "hudnav",
+      "env_id": "OpenWorldCreativeHud-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "1387541841",
+      "sha256": "e8fe876a12b221e17e9c8323a74b74bc4af4f97a497141b131478879ba2296c0",
+      "split": "train",
+      "source": "hudnav",
+      "env_id": "OpenWorldCreativeHud-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "578091061",
+      "sha256": "5da0dd5415e5ffffbaa11ccf231f03f496a4493a9d0b4c0e6bef2c007e7e9f80",
+      "split": "train",
+      "source": "hudnav",
+      "env_id": "OpenWorldCreativeHud-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "19402875",
+      "sha256": "82e6e73509ca1a6cc120ac786e1aeaa6c2bc0a1d01aa594336f52b0670f7629c",
+      "split": "train",
+      "source": "hudnav",
+      "env_id": "OpenWorldCreativeHud-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "1581585360",
+      "sha256": "b8e467be9d7cdd0a5153d3a16bf9ba71e61cb9b097f0fd0517e86d5af6b1aca4",
+      "split": "train",
+      "source": "hudnav",
+      "env_id": "OpenWorldCreativeHud-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "434982158",
+      "sha256": "52854875d59decf1725430c8241b00f1e77b5fcef1a42a4b82f614e699e744b9",
+      "split": "train",
+      "source": "hudnav",
+      "env_id": "OpenWorldCreativeHud-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "734051083",
+      "sha256": "ef778cab19302fd51c829ff6fc782cf06222889122b30d846ba4fe214943e66d",
+      "split": "train",
+      "source": "hudnav",
+      "env_id": "OpenWorldCreativeHud-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "1713366634",
+      "sha256": "6f7fdba21a2ffa18248107563c3da56c457104409acd35af5c8945610da25bb4",
+      "split": "train",
+      "source": "hudnav",
+      "env_id": "OpenWorldCreativeHud-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "1725378687",
+      "sha256": "2923241a9450e665153f78ee0320de370cef867b4031593faeef377c702077d0",
+      "split": "train",
+      "source": "hudnav",
+      "env_id": "OpenWorldCreativeHud-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "129676973",
+      "sha256": "dbe00c75d6f32467444f7f6b8ebe5883d91e947f5500d76d8bd7fec0f2395284",
+      "split": "train",
+      "source": "hudnav",
+      "env_id": "OpenWorldCreativeHud-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "929514201",
+      "sha256": "bbf85853d880de7790c95d2494a8cbef09ab21d0f59dfe7d358fc6523785a54f",
+      "split": "train",
+      "source": "hudnav",
+      "env_id": "OpenWorldCreativeHud-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "196939843",
+      "sha256": "c01526b7f401e6886c4b4d9e590eea0e88d99c87d180c4af766fc6ae37424ce3",
+      "split": "train",
+      "source": "hudnav",
+      "env_id": "OpenWorldCreativeHud-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "719581613",
+      "sha256": "a5f266fa9c0c90a32670943ff6168d453e7ff9c82b2be6e00f05a9124ad49d61",
+      "split": "train",
+      "source": "hudnav",
+      "env_id": "OpenWorldCreativeHud-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "2045668408",
+      "sha256": "b093270f79de6adf98336f83a333b02de12f9dc1eaecb65b4b29f20148803d11",
+      "split": "train",
+      "source": "hudnav",
+      "env_id": "OpenWorldCreativeHud-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "1042719720",
+      "sha256": "2e37c35afc72c735d4757e12902178c4bd7e6c042d76dc7f7c2da92e7736f177",
+      "split": "train",
+      "source": "hudnav",
+      "env_id": "OpenWorldCreativeHud-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "1572514580",
+      "sha256": "a63ddf177defbbbd8c388b7e234bb1c6ac626bd36c25699fec2e18fb0b19658d",
+      "split": "train",
+      "source": "hudnav",
+      "env_id": "OpenWorldCreativeHud-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "1744750674",
+      "sha256": "e2a5d880c1bb0b0555e97635991bdba7a7825dff2839854f2d02b5b5d8b27124",
+      "split": "train",
+      "source": "hudnav",
+      "env_id": "OpenWorldCreativeHud-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "1697786984",
+      "sha256": "f6ed9b8f487d365e9b38430d07e226b7b3e65fcbfdfbcbb0e5e24f4b7337af48",
+      "split": "train",
+      "source": "hudnav",
+      "env_id": "OpenWorldCreativeHud-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "713559735",
+      "sha256": "b0a9169b3914a3826fceba72f55dbf10725a4c540aad69a821b667ca00a9de90",
+      "split": "train",
+      "source": "hudnav",
+      "env_id": "OpenWorldCreativeHud-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "1750298862",
+      "sha256": "31932bf6b248bbb931d28a141b3e765b737b605e3c02e3ccf8fe4de77c686a17",
+      "split": "train",
+      "source": "hudnav",
+      "env_id": "OpenWorldCreativeHud-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "1656681053",
+      "sha256": "3ccc09e832494d661dcdedc13774e775d466b3dff44f7a387bf20bd80509983b",
+      "split": "train",
+      "source": "hudnav",
+      "env_id": "OpenWorldCreativeHud-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "59853446",
+      "sha256": "30776b0ab33978f6084eceb3e9145f4d5568b2c0be6415531744bfd9db2ff259",
+      "split": "train",
+      "source": "hudnav",
+      "env_id": "OpenWorldCreativeHud-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "1069980126",
+      "sha256": "9095f891e7c18b2634169ee9b24fd8f3aa6ad1c97393f9f81ba1cb5c6089781b",
+      "split": "train",
+      "source": "hudnav",
+      "env_id": "OpenWorldCreativeHud-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "1016292102",
+      "sha256": "899fede9ed18ec46ca45e2eaec48466c5280fb23a1032e6eb7cb7a4a45b1a23b",
+      "split": "train",
+      "source": "hudnav",
+      "env_id": "OpenWorldCreativeHud-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "63483607",
+      "sha256": "855f988496eca60ff8f325ddc024be80455601575fd5d123d39b62aa64862ffa",
+      "split": "train",
+      "source": "hudnav",
+      "env_id": "OpenWorldCreativeHud-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "611566128",
+      "sha256": "ad943dcbd8954458d9b0b3d8ff89c554fe028413605c7f8ae7ffb8771de93c82",
+      "split": "train",
+      "source": "hudnav",
+      "env_id": "OpenWorldCreativeHud-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "282377690",
+      "sha256": "accb674f53f4534ba232898047f00b9d0ca446157338480f1409c11aa324291a",
+      "split": "train",
+      "source": "hudnav",
+      "env_id": "OpenWorldCreativeHud-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "1412360936",
+      "sha256": "52f08ffa9b050e570d0ae04e5841374692c2119b22fc74ac7579447c6f6dcbe7",
+      "split": "train",
+      "source": "hudnav",
+      "env_id": "OpenWorldCreativeHud-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "9771009",
+      "sha256": "053bb14b6838c14f37317b06603e97709b297932827d484d680f62074701765e",
+      "split": "train",
+      "source": "hudnav",
+      "env_id": "OpenWorldCreativeHud-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "432057751",
+      "sha256": "468677e65390f71003d01776beb59622388cb4ac492277e7bfe3f1838f32618c",
+      "split": "train",
+      "source": "hudnav",
+      "env_id": "OpenWorldCreativeHud-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "1594366549",
+      "sha256": "d7b3d09afcd8d6654469515f829d1740439120746a883012ead6876817503c76",
+      "split": "train",
+      "source": "hudnav",
+      "env_id": "OpenWorldCreativeHud-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "1956283033",
+      "sha256": "8c5597a8bfd6bc831b94894e1aae3cd24cdf6894126566dbd8f651304c223fe4",
+      "split": "train",
+      "source": "hudnav",
+      "env_id": "OpenWorldCreativeHud-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "2125214833",
+      "sha256": "83fa075f40084bf8a32a958bb81cbfc2e6ee4b5292011d51f9b01002c769bf28",
+      "split": "train",
+      "source": "hudnav",
+      "env_id": "OpenWorldCreativeHud-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "329724345",
+      "sha256": "c130e6479a056f899e540f509c076393f9d44d7b940454fecc6998fb7acf8b6f",
+      "split": "train",
+      "source": "hudnav",
+      "env_id": "OpenWorldCreativeHud-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "950470245",
+      "sha256": "6991235c7c2c69dbfd1ba6aa2d2dc4399dacb80a21bff97116f8f4f01b73245b",
+      "split": "train",
+      "source": "hudnav",
+      "env_id": "OpenWorldCreativeHud-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "1519641161",
+      "sha256": "9b645f3801af409f72c881d13e6bb4e432464046595d52b1ad971d82611b057b",
+      "split": "train",
+      "source": "hudnav",
+      "env_id": "OpenWorldCreativeHud-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "706526629",
+      "sha256": "29aca92002869895c529712b77a36a304d3c6283c9b7e22bb48a121360065ab1",
+      "split": "train",
+      "source": "hudnav",
+      "env_id": "OpenWorldCreativeHud-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "1464555241",
+      "sha256": "d3ddccea80829b29584f5caa1b756895e4e0b852e1b06bbd7f63ad4645ae246c",
+      "split": "train",
+      "source": "hudnav",
+      "env_id": "OpenWorldCreativeHud-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "1820478559",
+      "sha256": "519e7536935ea8eb0d255ca9b1f4babcf0dba45d5ef47fb45c52161fbfc35405",
+      "split": "train",
+      "source": "hudnav",
+      "env_id": "OpenWorldCreativeHud-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "1443337233",
+      "sha256": "6504b107789768e267815e55bba2cb82ac242ded572a2e6d7aea2309852d3319",
+      "split": "train",
+      "source": "hudnav",
+      "env_id": "OpenWorldCreativeHud-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "1920388878",
+      "sha256": "7e94c9e043f39e0ee6da433f1346c613fce83f64caee33b600aec712d77e0d93",
+      "split": "train",
+      "source": "hudnav",
+      "env_id": "OpenWorldCreativeHud-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "165160868",
+      "sha256": "da89cc5bc9abdd0f60bff820631206fb8ad31f81c8cd2bff44930b3533a78f57",
+      "split": "train",
+      "source": "hudnav",
+      "env_id": "OpenWorldCreativeHud-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "412075170",
+      "sha256": "5179a38bcc9106a1c5e6d00ba0f25b711488ba6e8c919c1614f8fd621f05e52f",
+      "split": "train",
+      "source": "hudnav",
+      "env_id": "OpenWorldCreativeHud-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "913407537",
+      "sha256": "373a42181dd7cbba92ef04a3e212ed7c2428df4bfdc31a23a5706982569d5d0a",
+      "split": "train",
+      "source": "hudnav",
+      "env_id": "OpenWorldCreativeHud-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "252633645",
+      "sha256": "64a5288f94775b9cfdf1dd72ee837a9a0ca2001a5532b7c75112294b296ca0db",
+      "split": "train",
+      "source": "hudnav",
+      "env_id": "OpenWorldCreativeHud-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "158876046",
+      "sha256": "d123ef19d5e019750b2f87e0ee624ac151590844fedf97fb450238a61f66fc99",
+      "split": "train",
+      "source": "hudnav",
+      "env_id": "OpenWorldCreativeHud-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "1221477618",
+      "sha256": "17a637cc70ee3fc0d8f8af30917fb4fbb646ae7b6a1a63dbf52e41996c8b6469",
+      "split": "train",
+      "source": "hudnav",
+      "env_id": "OpenWorldCreativeHud-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "414630671",
+      "sha256": "79809c586584ffd0b8ba1d689b3de4590bbe6d0ab24852fad6e333edb9e68ea9",
+      "split": "train",
+      "source": "hudnav",
+      "env_id": "OpenWorldCreativeHud-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "969841606",
+      "sha256": "0fd90d58bd40904991cf2c219537bc92b4646e1c2fd86ee4189bb668a0cf9019",
+      "split": "train",
+      "source": "hudnav",
+      "env_id": "OpenWorldCreativeHud-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "1864477390",
+      "sha256": "bdea130c0a1dea5bb13b46a5ba5ccdc58c0e68789c65d7679f005d319cda0ee7",
+      "split": "train",
+      "source": "hudnav",
+      "env_id": "OpenWorldCreativeHud-v0",
+      "split_role": "train"
+    },
+    {
+      "name": "284357658",
+      "sha256": "85616d74c7607dd6f0ea6b11d6ad3845ee8d65c009b62ccbd8ee9c67e47a4532",
+      "split": "train",
+      "source": "hudnav",
+      "env_id": "OpenWorldCreativeHud-v0",
+      "split_role": "val"
+    },
+    {
+      "name": "806373842",
+      "sha256": "f8d8b4eed10e789cf6c51a19da6cbc12f19601dd3da8ec9fbbf99f7052dab2b1",
+      "split": "train",
+      "source": "hudnav",
+      "env_id": "OpenWorldCreativeHud-v0",
+      "split_role": "val"
+    },
+    {
+      "name": "1367017104",
+      "sha256": "3d966d77e22827066911973d2807da6dced02145ac6f95dd4b8881fb6de50c48",
+      "split": "train",
+      "source": "hudnav",
+      "env_id": "OpenWorldCreativeHud-v0",
+      "split_role": "val"
+    },
+    {
+      "name": "1493351489",
+      "sha256": "6ea5edeeae60b877caf2e3035967b9807eebbc1679b077c7ff3d92bcafef9683",
+      "split": "train",
+      "source": "hudnav",
+      "env_id": "OpenWorldCreativeHud-v0",
+      "split_role": "val"
+    },
+    {
+      "name": "146685044",
+      "sha256": "7215edbc16784f903a6ae5bff63697343636321cc4fa79fc076ed46dfe0a9392",
+      "split": "train",
+      "source": "hudnav",
+      "env_id": "OpenWorldCreativeHud-v0",
+      "split_role": "val"
+    },
+    {
+      "name": "594527535",
+      "sha256": "36eb479f4bfe2a28cba98c0d886d2849a6959389d947fd5aec8f9b8e5c298c20",
+      "split": "train",
+      "source": "hudnav",
+      "env_id": "OpenWorldCreativeHud-v0",
+      "split_role": "val"
+    },
+    {
+      "name": "660579659",
+      "sha256": "756ea1d6b1b9c9ec43ee0ea38ff74e9fdbd78b00559eae0cf102be4310f6570a",
+      "split": "train",
+      "source": "hudnav",
+      "env_id": "OpenWorldCreativeHud-v0",
+      "split_role": "val"
+    },
+    {
+      "name": "1210032114",
+      "sha256": "c66d9166265956382827a97aedf2617e2508c28d582d90e192a93d372f6923b1",
+      "split": "train",
+      "source": "hudnav",
+      "env_id": "OpenWorldCreativeHud-v0",
+      "split_role": "spare_train"
+    },
+    {
+      "name": "641293147",
+      "sha256": "db92da6da3dbdc078d551edd46c1c11412b52dc2509113d2fa97fd52fa86ee3c",
+      "split": "train",
+      "source": "hudnav",
+      "env_id": "OpenWorldCreativeHud-v0",
+      "split_role": "spare_train"
+    },
+    {
+      "name": "629172304",
+      "sha256": "54444401a1952db6aacca010d2990300f2ff0874e9e55d5ffec8ee2d3589ca07",
+      "split": "train",
+      "source": "hudnav",
+      "env_id": "OpenWorldCreativeHud-v0",
+      "split_role": "spare_train"
+    },
+    {
+      "name": "573115862",
+      "sha256": "7d182ed3a0bfb17ab704de375c00037e04d85ed794048b23269888fdc86354f6",
+      "split": "train",
+      "source": "hudnav",
+      "env_id": "OpenWorldCreativeHud-v0",
+      "split_role": "spare_train"
+    },
+    {
+      "name": "1535535026",
+      "sha256": "da4f3fe0a632d52ccbaa0898503697664e78343a352d9e1f17634c740b92c3f1",
+      "split": "train",
+      "source": "hudnav",
+      "env_id": "OpenWorldCreativeHud-v0",
+      "split_role": "spare_train"
+    },
+    {
+      "name": "254149456",
+      "sha256": "20718b768e635a5ef508e1ea9fdd4e6e56f14f7bcbbe996e1a691fcbe239c84f",
+      "split": "train",
+      "source": "hudnav",
+      "env_id": "OpenWorldCreativeHud-v0",
+      "split_role": "spare_val"
+    },
+    {
+      "name": "1649647508",
+      "sha256": "457009676e74dde9d9109b0b26dbe165e6a0941d58affa5ee0b840b43e8879fc",
+      "split": "train",
+      "source": "hudnav",
+      "env_id": "OpenWorldCreativeHud-v0",
+      "split_role": "spare_val"
+    }
+  ]
+}
