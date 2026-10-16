@@ -51,7 +51,15 @@ class MinetestLatentCameraAction(StandardDatasetBase):
             instances: str = None, # if specified limits dataset to these instances (comma-separated sha256 hashes)
             remove_bad_frames: bool = False,
             bad_frames_config: dict = None,
+            encode_latents_on_the_fly: bool = False, # return raw voxel classes + images instead of cached latents;
+                                                     # the trainer encodes them with the frozen VAEs (see trainers/online_latents.py)
     ):
+
+        self.encode_latents_on_the_fly = encode_latents_on_the_fly
+        if encode_latents_on_the_fly:
+            no_latents = True
+            sample_raw_images = True
+            sample_voxel_classes = True
 
         self.num_instances = num_instances if not instances else None
         self.min_level_quality_score = min_level_quality_score if instances is None else -1.0
@@ -93,7 +101,8 @@ class MinetestLatentCameraAction(StandardDatasetBase):
             'voxel_latent': None,
             'pixel_latent': None,
         }
-        normalize_latents = False if no_latents else normalize_latents
+        # On-the-fly mode has no cached latents but still needs the stats: the trainer normalizes freshly encoded latents.
+        normalize_latents = False if (no_latents and not encode_latents_on_the_fly) else normalize_latents
         if normalize_latents:
             assert os.path.exists(os.path.join(self.root, 'latent_stats.npz')), \
             f"Latent stats file not found: {os.path.join(self.root, 'latents_stats.npz')}."
@@ -111,7 +120,10 @@ class MinetestLatentCameraAction(StandardDatasetBase):
 
     def filter_metadata(self, metadata, instances=None):
         stats = {}
-        metadata = metadata[metadata['pixel_latent_generated'] & metadata['voxel_latent_generated']]
+        if self.no_latents: # includes on-the-fly mode: voxel_classes/ (and cropped voxels) must exist
+            metadata = metadata[metadata['voxelized']]
+        else:
+            metadata = metadata[metadata['pixel_latent_generated'] & metadata['voxel_latent_generated']]
         stats['Available samples'] = len(metadata)
         metadata = metadata[metadata['level_quality_score'] >= self.min_level_quality_score]
         stats[f'Level quality score >= {self.min_level_quality_score}'] = len(metadata)
@@ -351,16 +363,23 @@ class MinetestLatentCameraAction(StandardDatasetBase):
             pixel_latent = rearrange(pixel_latent, 't h w c -> t c h w')  # (clip_len, C, H, W)
 
         if self.sample_raw_images:
-            if 'obs_rgb' not in raw_data:
-                raw_images = self._get_rgb_from_mp4(instance)
+            pix_start, pix_end = context_start - self.pixel_offset_ts, sampled_ts - self.pixel_offset_ts
+            if 'obs_rgb' in raw_data:
+                raw_images = torch.from_numpy(raw_data['obs_rgb'])[pix_start:pix_end]
+            elif self.encode_latents_on_the_fly:
+                # only decode the clip's frames, not the whole 600-frame episode
+                raw_images = self._get_rgb_clip_from_mp4(instance, pix_start, pix_end)
             else:
-                raw_images = torch.from_numpy(raw_data['obs_rgb'])
-            raw_images = raw_images[context_start - self.pixel_offset_ts:sampled_ts - self.pixel_offset_ts]
-            raw_images = rearrange(raw_images, 't h w c -> t c h w').float() / 255.0 * 2.0 - 1.0
+                raw_images = self._get_rgb_from_mp4(instance)[pix_start:pix_end]
+            raw_images = rearrange(raw_images, 't h w c -> t c h w')
+            if not self.encode_latents_on_the_fly: # on the fly: stays uint8 until it's on the GPU (4x less to move)
+                raw_images = raw_images.float() / 255.0 * 2.0 - 1.0
 
         if self.sample_voxel_classes:
             voxel_classes = self._get_voxel_classes(instance)
-            voxel_classes = torch.from_numpy(voxel_classes[context_start - self.voxel_offset_ts:sampled_ts - self.voxel_offset_ts]).long()  # (T, X, Y, Z)
+            voxel_classes = voxel_classes[context_start - self.voxel_offset_ts:sampled_ts - self.voxel_offset_ts]  # (T, X, Y, Z)
+            # on the fly: int32 is half the size of int64 to move; the encoder casts to long on the GPU
+            voxel_classes = torch.from_numpy(voxel_classes.astype(np.int32 if self.encode_latents_on_the_fly else np.int64))
 
         action = action[context_start:sampled_ts]
         action = torch.from_numpy(action).float()  # (clip_len, action_dim)
@@ -368,12 +387,14 @@ class MinetestLatentCameraAction(StandardDatasetBase):
         camera = camera[context_start - self.camera_offset_ts :sampled_ts - self.camera_offset_ts]
         camera = torch.from_numpy(camera).float()
 
-        if self.normalization['voxel_latent'] is not None:
-            voxel_latent = ((voxel_latent - self.normalization['voxel_latent']['mean'].view(1, -1, 1, 1, 1).to(voxel_latent))
-                                / self.normalization['voxel_latent']['std'].view(1, -1, 1, 1, 1).to(voxel_latent))
-        if self.normalization['pixel_latent'] is not None:
-            pixel_latent = ((pixel_latent - self.normalization['pixel_latent']['mean'].view(1, -1, 1, 1).to(pixel_latent))
-                         / self.normalization['pixel_latent']['std'].view(1, -1, 1, 1).to(pixel_latent))
+        # on the fly, latents don't exist yet: the trainer normalizes them right after encoding
+        if not self.encode_latents_on_the_fly:
+            if self.normalization['voxel_latent'] is not None:
+                voxel_latent = ((voxel_latent - self.normalization['voxel_latent']['mean'].view(1, -1, 1, 1, 1).to(voxel_latent))
+                                    / self.normalization['voxel_latent']['std'].view(1, -1, 1, 1, 1).to(voxel_latent))
+            if self.normalization['pixel_latent'] is not None:
+                pixel_latent = ((pixel_latent - self.normalization['pixel_latent']['mean'].view(1, -1, 1, 1).to(pixel_latent))
+                             / self.normalization['pixel_latent']['std'].view(1, -1, 1, 1).to(pixel_latent))
 
 
         result = {
@@ -443,6 +464,31 @@ class MinetestLatentCameraAction(StandardDatasetBase):
         mp4_path = os.path.join(self.root, local_path, 'rgb.mp4')
         video, _, _ = io.read_video(mp4_path, pts_unit='sec') # video: (T, H, W, 3), uint8
         return video
+
+    def _get_rgb_clip_from_mp4(self, instance, start, end):
+        """Decode only frames [start, end) of rgb.mp4: seek to the nearest keyframe, decode forward."""
+        import av
+        local_path = self.metadata.loc[instance]['local_path']
+        mp4_path = os.path.join(self.root, local_path, 'rgb.mp4')
+        frames = []
+        with av.open(mp4_path) as container:
+            stream = container.streams.video[0]
+            # no codec threading: stopping a threaded decoder early (we break after the last needed frame)
+            # occasionally deadlocks in PyAV, and dataloader workers already decode in parallel
+            # frame index -> pts, assuming constant frame rate (as written by the data generator)
+            pts_per_frame = 1 / (stream.average_rate * stream.time_base)
+            pts0 = stream.start_time or 0
+            container.seek(pts0 + int(start * pts_per_frame), stream=stream, backward=True, any_frame=False)
+            for frame in container.decode(stream):
+                idx = int(round((frame.pts - pts0) / pts_per_frame))
+                if idx < start:
+                    continue
+                if idx >= end:
+                    break
+                frames.append(frame.to_ndarray(format="rgb24"))
+        if len(frames) != end - start:
+            raise ValueError(f"Decoded {len(frames)} frames for [{start}, {end}) of {mp4_path}")
+        return torch.from_numpy(np.stack(frames)) # (T, H, W, 3), uint8
 
     def _extract_camera_representation(self, data):
 

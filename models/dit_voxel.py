@@ -12,6 +12,7 @@ from typing import Optional, Tuple
 
 import torch
 import torch.nn.functional as F
+import torch.utils.checkpoint
 import utils3d.torch.transforms as utils3d_t
 from einops import rearrange
 from timm.models.vision_transformer import Mlp
@@ -70,6 +71,7 @@ class VoxelDitDenoiserArgs:
     voxel_rotary_max_freq : int = 512
     pixel_rotary_max_freq : int = 256
     qk_rms_norm : bool = True
+    gradient_checkpointing: bool = False # Recompute block activations in backward (training only; no effect on weights)
 
     @property
     def name(self) -> str:
@@ -519,8 +521,10 @@ class VoxelDiT(nn.Module):
         voxel_rotary_max_freq=1024,
         pixel_rotary_max_freq=256,
         qk_rms_norm=True,
+        gradient_checkpointing=False,
     ):
         super().__init__()
+        self.gradient_checkpointing = gradient_checkpointing
         self.vox_grid_size = (input_x, input_y, input_z)
         self.in_channels = in_channels
         self.out_channels = in_channels
@@ -847,7 +851,11 @@ class VoxelDiT(nn.Module):
         for i, block in enumerate(self.blocks):
             temporal_cache = self.temporal_kv_caches[i] if self.temporal_kv_caches else None
             cross_cache = self.cross_kv_caches[i] if self.cross_kv_caches else None
-            x = block(x, c, cross_cond, temporal_kv_cache=temporal_cache, cross_kv_cache=cross_cache, global_start_idx=global_start_idx_t, prefill=prefill)
+            if self.gradient_checkpointing and self.training and torch.is_grad_enabled() and temporal_cache is None and cross_cache is None:
+                x = torch.utils.checkpoint.checkpoint(block, x, c, cross_cond, use_reentrant=False,
+                                                      global_start_idx=global_start_idx_t, prefill=prefill)
+            else:
+                x = block(x, c, cross_cond, temporal_kv_cache=temporal_cache, cross_kv_cache=cross_cache, global_start_idx=global_start_idx_t, prefill=prefill)
         Xp, Yp, Zp = self.x_embedder.grid_size
         x = rearrange(x, "b t (x y z) d -> b t x y z d", x=Xp, y=Yp, z=Zp)
         x = self.final_layer(x, c)  # (B, T, X, Y, Z, patch_size ** 3 * out_channels)

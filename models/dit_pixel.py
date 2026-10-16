@@ -12,6 +12,7 @@ from typing import Optional, Tuple
 
 import torch
 import torch.nn.functional as F
+import torch.utils.checkpoint
 from einops import rearrange
 from loguru import logger
 from timm.models.vision_transformer import Mlp
@@ -590,6 +591,7 @@ class FrameDepthStackPixelDitDenoiserArgs:
     depth_patch_size : int = 6
     depth_stride_size : int = 4
     depth_output_dim : int = 16
+    gradient_checkpointing : bool = False # Recompute depth aggregation + block activations in backward (training only)
     aggregation_config : RasterizedVoxelDepthTransformerArgs = field(
         default_factory=RasterizedVoxelDepthTransformerArgs
     )
@@ -632,9 +634,11 @@ class FrameDepthStackPixelDiT(nn.Module):
             aggregation_config=None,
             use_kv_cache=False,
             batch_size=None,
+            gradient_checkpointing=False,
     ):
         super().__init__()
         logger.info("FrameDepthStack DiT")
+        self.gradient_checkpointing = gradient_checkpointing
         self.input_h = input_h
         self.input_w = input_w
         self.in_channels = in_channels
@@ -814,6 +818,9 @@ class FrameDepthStackPixelDiT(nn.Module):
         vox = x.reshape(shape=(x.shape[0], c, H * p, W * p))
         return vox
 
+    def _use_checkpointing(self):
+        return self.gradient_checkpointing and self.training and torch.is_grad_enabled()
+
     def forward(self, x, t, external_cond=None, global_start_idx=None, prefill=False):
         """
         Forward pass of DiT.
@@ -841,7 +848,10 @@ class FrameDepthStackPixelDiT(nn.Module):
             raster_cond, depth = self.rasterizer.rasterize(voxel_latents, view, proj, self.background_feature)
             raster_cond = rearrange(raster_cond, "l bt h w c -> bt h w l c").to(dtype=torch.float16)
             depth = rearrange(depth, "l bt h w -> bt h w l").to(dtype=torch.float16)
-            raster_cond = self.depth_embedder(raster_cond, depth)
+            if self._use_checkpointing():
+                raster_cond = torch.utils.checkpoint.checkpoint(self.depth_embedder, raster_cond, depth, use_reentrant=False)
+            else:
+                raster_cond = self.depth_embedder(raster_cond, depth)
             raster_cond = rearrange(raster_cond, 'bt h w l c -> bt (l c) h w')
             if self.raster_cache is not None:
                 self.raster_cache["raster_cond"] = raster_cond
@@ -867,7 +877,11 @@ class FrameDepthStackPixelDiT(nn.Module):
         global_start_idx_t = torch.tensor(global_start_idx, device=x.device)
         for i, block in enumerate(self.blocks):
             cache = self.kv_caches[i] if self.kv_caches else None
-            x = block(x, c, kv_cache=cache, global_start_idx=global_start_idx_t, prefill=prefill)
+            if self._use_checkpointing() and cache is None:
+                x = torch.utils.checkpoint.checkpoint(block, x, c, use_reentrant=False,
+                                                      global_start_idx=global_start_idx_t, prefill=prefill)
+            else:
+                x = block(x, c, kv_cache=cache, global_start_idx=global_start_idx_t, prefill=prefill)
 
         x = self.final_layer(x, c)  # (N, T, H, W, patch_size ** 2 * out_channels)
         # unpatchify

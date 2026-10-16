@@ -23,6 +23,8 @@ from data_loaders.minetest_latent_camera_action_dataset import MinetestLatentCam
 from models import dit_voxel
 from trainers.flow_euler import FlowEulerTrainingArgs, FlowEuler
 from trainers import BaseTrainer
+from utils.train_util import train_loader_sampling_kwargs
+from trainers.online_latents import OnlineLatentEncoder
 
 warnings.simplefilter(action="ignore", category=FutureWarning)
 
@@ -85,11 +87,12 @@ class VoxelDiffuserTrainer(BaseTrainer):
             cam_translation_representation=args.camera_translation_representation,
             sample_voxel_importance_mask=args.remove_bad_frames,
             remove_bad_frames=args.remove_bad_frames,
+            encode_latents_on_the_fly=args.encode_latents_on_the_fly,
         )
         self.dataloader = DataLoader(
             self.dataset,
             batch_size=self.cfg.batch_size,
-            shuffle=True,
+            **train_loader_sampling_kwargs(self.dataset, self.cfg, self.accelerator.num_processes),
             num_workers=self.cfg.dataloader_workers,
             persistent_workers=True if self.cfg.dataloader_workers else False,
             prefetch_factor=self.cfg.dataloader_prefetch_factor if self.cfg.dataloader_workers else None,
@@ -110,6 +113,7 @@ class VoxelDiffuserTrainer(BaseTrainer):
             cam_translation_representation=args.camera_translation_representation,
             sample_voxel_importance_mask=args.remove_bad_frames,
             remove_bad_frames=args.remove_bad_frames,
+            encode_latents_on_the_fly=args.encode_latents_on_the_fly,
         )
 
         self.val_dataloader = DataLoader(
@@ -135,6 +139,10 @@ class VoxelDiffuserTrainer(BaseTrainer):
         )
         num_parameters = sum(p.numel() for p in self.models.parameters())
         logger.info(f"# of parameters: {num_parameters / 1e6: .4f}M")
+        self.online_encoder = OnlineLatentEncoder(
+            self.cfg.voxel_encoder_checkpoint, self.cfg.pixel_vae_checkpoint,
+            self.dataset.normalization, self.accelerator.device,
+        ) if self.cfg.encode_latents_on_the_fly else None
 
     def training_losses(
             self,
@@ -151,6 +159,8 @@ class VoxelDiffuserTrainer(BaseTrainer):
             a dict with the key "loss" containing a tensor of shape [B].
             may also contain other keys for different terms.
         """
+        if self.online_encoder is not None:
+            batch = self.online_encoder(batch)
         x_0 = batch["voxel"]
 
         # build conditioning

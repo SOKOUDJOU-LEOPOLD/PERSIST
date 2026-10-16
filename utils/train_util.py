@@ -8,6 +8,37 @@ def infinite_loader(dataloader):
             yield batch
 
 
+class ChainedShuffleSampler(torch.utils.data.Sampler):
+    """`num_passes` independent shuffles of range(n), back to back: epochs without epoch boundaries.
+
+    accelerate re-synchronizes RNG across ranks (a collective) every time a prepared dataloader starts a new
+    pass. If ranks reach the end of a pass on different steps, that collective pairs up with a different one
+    on the other rank and the job hangs. Chaining the passes into one long sampler means the dataloader is
+    iterated once, at the start, while all ranks are in step.
+    """
+
+    def __init__(self, n, num_passes, seed=0):
+        self.n, self.num_passes, self.seed = n, num_passes, seed
+
+    def __len__(self):
+        return self.n * self.num_passes
+
+    def __iter__(self):
+        g = torch.Generator().manual_seed(self.seed)
+        for _ in range(self.num_passes):
+            yield from torch.randperm(self.n, generator=g).tolist()
+
+
+def train_loader_sampling_kwargs(dataset, cfg, world_size):
+    """DataLoader kwargs for the train loader: plain shuffling, or (cfg.no_epoch_boundaries) one
+    ChainedShuffleSampler long enough for the whole run on every rank."""
+    if not getattr(cfg, "no_epoch_boundaries", False):
+        return {"shuffle": True}
+    samples_needed = cfg.total_steps * cfg.batch_size * world_size
+    num_passes = samples_needed // len(dataset) + 2
+    return {"sampler": ChainedShuffleSampler(len(dataset), num_passes, seed=cfg.random_seed)}
+
+
 def compute_grad_norm(model):
     grads = [p.grad.detach() for p in model.parameters() if p.grad is not None and p.requires_grad]
     if len(grads) == 0:

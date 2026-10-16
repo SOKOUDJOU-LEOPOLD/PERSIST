@@ -1,6 +1,10 @@
 # fmt:off
+import faulthandler
 import gc
+import json
 import os
+import shutil
+import signal
 # os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 import sys
 import time
@@ -12,12 +16,16 @@ from pathlib import Path
 from typing import *
 
 import torch
-from accelerate.utils import set_seed as accelerate_set_seed, send_to_device as accelerate_send_to_device
+from accelerate.utils import set_seed as accelerate_set_seed, send_to_device as accelerate_send_to_device, gather_object
 from loguru import logger
 from tqdm import tqdm
 from tyro.conf import Fixed
 
 from utils.accelerate_util import accelerator_load_random_state
+
+# `kill -USR1 <pid>` prints every thread's Python stack to stderr (inherited by dataloader workers),
+# to diagnose hung multi-node jobs without stopping them
+faulthandler.register(signal.SIGUSR1, all_threads=True)
 from utils.train_util import (
     infinite_loader,
     compute_grad_norm,
@@ -92,6 +100,20 @@ class BaseTrainingArgs:
     across all val episodes) instead of drawing one random batch via next() on an infinite
     iterator. Default off so existing non-finetune configs/runs are unaffected."""
 
+    dataloader_start_method: Literal["fork", "forkserver", "spawn"] | None = None
+    """How dataloader worker processes are started (None = platform default, fork on Linux). 'forkserver' never forks
+    the training process itself, which avoids rare deadlocks when workers are (re)created while CUDA/NCCL threads
+    are running -- seen as multi-node hangs at epoch boundaries."""
+
+    no_epoch_boundaries: bool = False
+    """Train loader draws from one long chain of shuffled passes (utils.train_util.ChainedShuffleSampler) instead of
+    restarting each epoch, so multi-GPU runs never hit accelerate's per-epoch RNG sync at mismatched steps (a hang)."""
+
+    checkpoint_retention: Literal["all", "latest_and_best"] = "all"
+    """'all' keeps every checkpoint_<step> (stock behavior). 'latest_and_best' keeps only the newest
+    checkpoint_<step> (full state, for resuming) plus checkpoints/best/ (model + EMA weights of the
+    lowest full-pass val loss so far; needs full_pass_validation)."""
+
     # ---- Arguments to be filled in at runtime ----
     run_id: Fixed[str | None] = None
     """Unique identifier for this training run."""
@@ -101,6 +123,8 @@ class BaseTrainingArgs:
     """Checkpoint step to resume training."""
 
     def __post_init__(self):
+        if self.checkpoint_retention == "latest_and_best":
+            assert self.full_pass_validation, "checkpoint_retention='latest_and_best' picks best/ by full-pass val loss: set --full-pass-validation."
         if "AMLT_OUTPUT_DIR" in os.environ:
             unique_run_id = f"{uuid.uuid4()}"[:8]
             self.run_id = f"{self.run_name}-uid-{unique_run_id}"
@@ -224,12 +248,18 @@ class BaseTrainer:
     def __init__(self, cfg, accelerator):
         self.cfg = cfg
         self.accelerator = accelerator
+        if cfg.dataloader_start_method is not None:
+            # DataLoaders built without an explicit multiprocessing_context use this default
+            torch.multiprocessing.set_start_method(cfg.dataloader_start_method, force=True)
         self.init_distributed()
         self.init_seeding()
         self.init_logging()
         self.init_directories()
         self._save_checkpoint_next_sync = False
         self._step = 0
+        # restored on resume so a resumed run only replaces best/ when it actually beats it
+        best_info = self.ckpt_dir / "best" / "best.json"
+        self.best_val_loss = json.load(open(best_info))["val_loss"] if best_info.exists() else float("inf")
 
         torch.backends.cuda.enable_flash_sdp(False)
         torch.backends.cuda.enable_math_sdp(True)
@@ -284,6 +314,8 @@ class BaseTrainer:
             wandb.init(
                 project=self.cfg.wandb_project, entity=self.cfg.wandb_entity,
                 name=self.cfg.wandb_run_name or self.cfg.run_id, config=vars(self.cfg),
+                # run_id is reused when --resume picks this run back up, so a resumed job continues the same curves
+                id=self.cfg.run_id, resume="allow",
             )
 
         logger.info("Training starts ...")
@@ -352,16 +384,28 @@ class BaseTrainer:
                         # episodes), averaged -- not just one random batch via next() on an
                         # infinite iterator. Opt-in (see full_pass_validation docstring) so
                         # existing non-finetune runs keep today's lightweight behavior.
-                        val_accum = defaultdict(float)
-                        n_val_batches = 0
+                        val_sums, val_counts = defaultdict(float), defaultdict(int)
                         for val_batch in self.val_dataloader:
                             val_batch = accelerate_send_to_device(val_batch, self.accelerator.device, non_blocking=True)
                             val_losses, status = self.training_losses(val_batch, verbose=True)
                             for k, v in val_losses.items():
-                                val_accum[k] += v.mean().float().cpu().item()
-                            n_val_batches += 1
-                        for k, v in val_accum.items():
-                            metrics[f"val_loss/{k}"] += (v / max(n_val_batches, 1)) / max(self.i_log // self.i_val, 1)
+                                val_sums[k] += v.mean().float().cpu().item()
+                                val_counts[k] += 1
+                        # each rank only sees its shard of the val set: combine all ranks before averaging
+                        if self.world_size > 1:
+                            per_rank = gather_object([(dict(val_sums), dict(val_counts))])
+                            val_sums, val_counts = defaultdict(float), defaultdict(int)
+                            for rank_sums, rank_counts in per_rank:
+                                for k in rank_sums:
+                                    val_sums[k] += rank_sums[k]
+                                    val_counts[k] += rank_counts[k]
+                        for k, v in val_sums.items():
+                            metrics[f"val_loss/{k}"] += (v / val_counts[k]) / max(self.i_log // self.i_val, 1)
+                        if self.cfg.checkpoint_retention == "latest_and_best" and self.accelerator.is_main_process:
+                            val_loss = val_sums["loss"] / val_counts["loss"]
+                            if val_loss < self.best_val_loss:
+                                self.best_val_loss = val_loss
+                                self.save_best(val_loss)
                     else:
                         val_batch = next(val_data_iterator)
                         val_batch = accelerate_send_to_device(val_batch, self.accelerator.device, non_blocking=True)
@@ -544,6 +588,34 @@ class BaseTrainer:
                     ema_tensors[f"{model_name}.{k}"] = v.detach().cpu()
 
             safetensors_save_file(ema_tensors, str(current_ckpt_dir / "ema.safetensors"))
+
+        if self.cfg.checkpoint_retention == "latest_and_best":
+            # the new checkpoint is fully written above, so older ones are no longer needed to resume
+            for old_ckpt_dir in self.local_ckpt_dir.glob("checkpoint_*"):
+                if old_ckpt_dir.is_dir() and old_ckpt_dir != current_ckpt_dir:
+                    logger.info(f"Removing older checkpoint {old_ckpt_dir}")
+                    shutil.rmtree(old_ckpt_dir)
+
+    def save_best(self, val_loss):
+        """Write model + EMA weights (no optimizer/RNG state) to checkpoints/best/, replacing the previous best.
+        File names match accelerate's save_state (model.safetensors, model_1.safetensors, ...)."""
+        from safetensors.torch import save_file as safetensors_save_file, save_model as safetensors_save_model
+
+        logger.info(f"New best val loss {val_loss:.6f} at step {self.step}, saving to {self.local_ckpt_dir / 'best'}")
+        best_dir, tmp_dir = self.local_ckpt_dir / "best", self.local_ckpt_dir / "best_tmp"
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        tmp_dir.mkdir(parents=True)
+        for i, (name, model) in enumerate(self._iter_models()):
+            filename = "model.safetensors" if i == 0 else f"model_{i}.safetensors"
+            safetensors_save_model(self.accelerator.unwrap_model(model), str(tmp_dir / filename))
+        if getattr(self, "ema", None) is not None:
+            ema_tensors = {f"{model_name}.{k}": v.detach().cpu()
+                           for model_name, ema_obj in self.ema.items() for k, v in ema_obj.shadow.items()}
+            safetensors_save_file(ema_tensors, str(tmp_dir / "ema.safetensors"))
+        json.dump({"step": self.step, "val_loss": val_loss}, open(tmp_dir / "best.json", "w"))
+        # swap in only once fully written, so a crash mid-save never leaves best/ broken
+        shutil.rmtree(best_dir, ignore_errors=True)
+        tmp_dir.rename(best_dir)
 
     def load_state(self, checkpoint_path):
         checkpoint_path = Path(checkpoint_path)

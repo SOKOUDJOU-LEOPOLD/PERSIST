@@ -23,6 +23,33 @@ import pandas as pd
 class Args:
     dataset_dir: str
     val_sha256_file: str
+    replace_rejected: bool = False
+    """Instead of failing, replace each validation sha256 that did not survive preprocessing with a random
+    surviving non-validation episode from the same source (same env dir), so the split keeps its size and
+    per-source balance. The replacement moves out of training. Replacements are written next to
+    val_sha256_file as *.replacements.csv. For large splits where a few rejections are expected."""
+    seed: int = 0
+
+
+def replace_rejected_val(metadata, val_sha256, seed, out_path):
+    import random
+
+    usable = metadata["voxelized"] & (metadata["level_quality_score"] > 0)
+    source = metadata["local_path"].str.split("/").str[1]  # raw/<env_id>/<seed>
+    rejected = [s for s in val_sha256 if s not in metadata.index or not usable[s]]
+    rng = random.Random(seed)
+    val_set, replacements = set(val_sha256), []
+    for s in rejected:
+        src = source[s] if s in metadata.index else None
+        pool = sorted(metadata.index[usable & (source == src) & ~metadata.index.isin(val_set)])
+        assert pool, f"no surviving episode left to replace rejected validation sha256 {s} (source {src})"
+        new = rng.choice(pool)
+        val_set.discard(s)
+        val_set.add(new)
+        replacements.append({"rejected": s, "source": src, "replacement": new})
+    pd.DataFrame(replacements, columns=["rejected", "source", "replacement"]).to_csv(out_path, index=False)
+    print(f"Replaced {len(replacements)} rejected validation episodes (see {out_path})")
+    return [r for r in val_sha256 if r in val_set] + [r["replacement"] for r in replacements]
 
 
 def main(args: Args):
@@ -30,6 +57,9 @@ def main(args: Args):
     metadata = pd.read_csv(metadata_path, dtype={"sha256": str}).set_index("sha256")
 
     val_sha256 = [line.strip() for line in open(args.val_sha256_file) if line.strip()]
+    if args.replace_rejected:
+        val_sha256 = replace_rejected_val(metadata, val_sha256, args.seed,
+                                          args.val_sha256_file.removesuffix(".txt") + ".replacements.csv")
 
     missing = [s for s in val_sha256 if s not in metadata.index]
     assert not missing, (

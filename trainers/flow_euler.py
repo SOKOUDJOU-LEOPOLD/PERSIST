@@ -79,6 +79,16 @@ class FlowEulerTrainingArgs(BaseTrainingArgs):
 
     normalize_latents: bool = True
 
+    encode_latents_on_the_fly: bool = False
+    """Encode voxel/pixel latents inside each training step with the frozen VAE encoders, instead of
+    reading cached voxel_latents/ and pixel_latents/ from disk. Requires the two checkpoints below."""
+
+    voxel_encoder_checkpoint: str | None = None
+    """Frozen voxel VAE encoder model.safetensors (used only with encode_latents_on_the_fly)."""
+
+    pixel_vae_checkpoint: str | None = None
+    """Frozen pixel VAE model.safetensors (used only with encode_latents_on_the_fly)."""
+
     log_train_metrics: bool = True
     """Whether to log extra training metrics (binned losses by diffusion time etc)."""
 
@@ -111,6 +121,9 @@ class FlowEulerTrainingArgs(BaseTrainingArgs):
     def __post_init__(self):
         super().__post_init__()
         assert self.total_steps or self.total_grad_steps, "Either total_steps or total_grad_steps must be set."
+        if self.encode_latents_on_the_fly:
+            assert self.voxel_encoder_checkpoint and self.pixel_vae_checkpoint, \
+                "encode_latents_on_the_fly needs --voxel-encoder-checkpoint and --pixel-vae-checkpoint."
         assert not (self.total_steps and self.total_grad_steps), "Only one of total_steps or total_grad_steps can be set."
         if self.total_grad_steps:
             self.total_steps = self.total_grad_steps * self.grad_accumulation_steps

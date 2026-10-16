@@ -23,6 +23,7 @@ from data_loaders.minetest_latent_camera_action_dataset import MinetestLatentCam
 from models import camera_transformer
 from trainers import BaseTrainer, BaseTrainingArgs
 from utils.camera_util import angular_diff_deg, camera_to_xyz_pry_fov
+from utils.train_util import train_loader_sampling_kwargs
 
 warnings.simplefilter(action="ignore", category=FutureWarning)
 
@@ -148,7 +149,7 @@ class VoxelDiffuserTrainer(BaseTrainer):
         self.dataloader = DataLoader(
             self.dataset,
             batch_size=self.cfg.batch_size,
-            shuffle=True,
+            **train_loader_sampling_kwargs(self.dataset, self.cfg, self.accelerator.num_processes),
             num_workers=self.cfg.dataloader_workers,
             persistent_workers=True if self.cfg.dataloader_workers else False,
             prefetch_factor=self.cfg.dataloader_prefetch_factor if self.cfg.dataloader_workers else None,

@@ -15,6 +15,11 @@ text files per archive for the next step's streaming extraction.
 
 Example:
     uv run python dataset_toolkits/select_luanti_episodes.py
+
+Full-pool run (all train-split episodes, 100+100 val, no spares, local splits files):
+    uv run python dataset_toolkits/select_luanti_episodes.py --n-train-per-source -1 \
+        --n-val-s1nav 100 --n-val-hudnav 100 --n-spare-train 0 --n-spare-val 0 \
+        --splits-dir data/luanti --output-dir dataset_toolkits/manifests/full29k
 """
 import json
 import random
@@ -29,11 +34,14 @@ class Args:
     repo_id: str = "percool/luanti"
     seed: int = 0
     n_train_per_source: int = 50
+    """-1 = every train-split episode left after val/spares are taken"""
     n_val_s1nav: int = 8
     n_val_hudnav: int = 7
     n_spare_train: int = 5
     n_spare_val: int = 2
     output_dir: str = "dataset_toolkits/manifests"
+    splits_dir: str | None = None
+    """read *.splits.json from this local dir instead of downloading from HF"""
 
 
 SOURCES = {
@@ -50,8 +58,11 @@ SOURCES = {
 }
 
 
-def load_train_pool(repo_id: str, splits_file: str) -> list[dict]:
-    path = hf_hub_download(repo_id=repo_id, filename=splits_file, repo_type="dataset")
+def load_train_pool(repo_id: str, splits_file: str, splits_dir: str | None = None) -> list[dict]:
+    if splits_dir is not None:
+        path = str(Path(splits_dir).resolve() / splits_file)
+    else:
+        path = hf_hub_download(repo_id=repo_id, filename=splits_file, repo_type="dataset")
     data = json.load(open(path))
     return [e for e in data["episodes"] if e["split"] == "train"], path
 
@@ -72,14 +83,16 @@ def main(args: Args):
     seed_lists: dict[str, list[str]] = {}
 
     for source_name, source_cfg in SOURCES.items():
-        pool, splits_path = load_train_pool(args.repo_id, source_cfg["splits_file"])
+        pool, splits_path = load_train_pool(args.repo_id, source_cfg["splits_file"], args.splits_dir)
         shuffled = pool.copy()
         rng.shuffle(shuffled)
 
-        n_train = args.n_train_per_source
         n_val = n_val_by_source[source_name]
         n_spare_train = args.n_spare_train
         n_spare_val = args.n_spare_val
+        n_train = args.n_train_per_source
+        if n_train < 0:
+            n_train = len(shuffled) - n_val - n_spare_train - n_spare_val
         total_needed = n_train + n_val + n_spare_train + n_spare_val
         assert len(shuffled) >= total_needed, (
             f"{source_name}: train pool has {len(shuffled)} episodes, need {total_needed}"
