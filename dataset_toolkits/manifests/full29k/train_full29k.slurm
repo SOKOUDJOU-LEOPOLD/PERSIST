@@ -21,6 +21,9 @@ source .venv/bin/activate
 export LD_PRELOAD=$EBROOTGCCCORE/lib64/libstdc++.so.6
 export PYTHONPATH=.
 export LOGLEVEL=INFO  # torch.distributed.elastic logs rendezvous progress
+# compute nodes have no internet: log wandb offline, sync_wandb_full29k.sh on the login node uploads it
+export WANDB_MODE=${WANDB_MODE:-offline}
+export WANDB_DIR=${WANDB_DIR:-/scratch/user/lsokoudj/PERSIST/outputs/runs_full29k}
 
 COMPONENT=$1
 GPUS_PER_NODE=$(nvidia-smi -L | wc -l)
