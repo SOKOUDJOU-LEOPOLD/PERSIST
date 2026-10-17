@@ -333,6 +333,7 @@ def main(args):
     trainer.prepare_optimizer()
     trainer.prepare_accelerate()
     trainer.train()
+    trainer.shutdown()
 
 
 if __name__ == "__main__":

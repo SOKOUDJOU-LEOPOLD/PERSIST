@@ -462,6 +462,16 @@ class BaseTrainer:
             if self.cfg.use_wandb:
                 wandb.finish()
 
+    def shutdown(self):
+        """Exit the process once every rank is done. Everything is saved by now, but persistent dataloader
+        workers / the NCCL process group can keep a finished multi-node job alive until its time limit."""
+        self.accelerator.wait_for_everyone()
+        self.accelerator.end_training()
+        logger.info("Exiting.")
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(0)
+
     def init_distributed(self):
         self.device = self.accelerator.device
         self.rank = self.accelerator.process_index
