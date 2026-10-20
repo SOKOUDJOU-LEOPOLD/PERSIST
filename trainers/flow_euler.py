@@ -89,6 +89,13 @@ class FlowEulerTrainingArgs(BaseTrainingArgs):
     pixel_vae_checkpoint: str | None = None
     """Frozen pixel VAE model.safetensors (used only with encode_latents_on_the_fly)."""
 
+    lora_rank: int = 0
+    """If > 0, fine-tune with LoRA (utils/lora.py): the loaded weights are frozen and only rank-`lora_rank`
+    adapters on the attention/MLP linear layers train. Merge for inference with scripts/merge_lora_checkpoint.py."""
+
+    lora_alpha: float | None = None
+    """LoRA scaling numerator (update scaled by alpha / rank); defaults to lora_rank."""
+
     log_train_metrics: bool = True
     """Whether to log extra training metrics (binned losses by diffusion time etc)."""
 

@@ -146,6 +146,8 @@ class Args:
     """Autocast precision for the rollout (matches `accelerate launch --mixed_precision`)."""
 
     output_dir: str = "outputs/rollouts"
+    seed: Optional[int] = None
+    """If set, seed all RNGs (per process) so rollouts are reproducible and comparable across checkpoints."""
     fps: int = 24
     device: str = "cuda:0"
     """CUDA device for single-process runs. Under `accelerate launch` the device is managed by
@@ -258,6 +260,9 @@ def main(args: Args):
     # `accelerate launch --multi_gpu` each process owns one GPU; without it this is a
     # single-process run and we honour --device.
     accelerator = Accelerator(mixed_precision=args.mixed_precision)
+    if args.seed is not None:
+        from accelerate.utils import set_seed
+        set_seed(args.seed, device_specific=True)
     distributed = accelerator.num_processes > 1
     device = accelerator.device if distributed else torch.device(args.device)
 

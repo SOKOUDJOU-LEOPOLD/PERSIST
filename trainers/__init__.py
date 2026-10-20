@@ -516,12 +516,21 @@ class BaseTrainer:
         return [("model", self.models)]
 
     def prepare_trainable_parameters(self):
-        pass
+        # called after load_pretrained_checkpoint(), so LoRA adapters sit on top of the loaded weights
+        if getattr(self.cfg, "lora_rank", 0) > 0:
+            from utils.lora import inject_lora
+            for name, model in self._iter_models():
+                wrapped = inject_lora(model, self.cfg.lora_rank, self.cfg.lora_alpha)
+                trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+                total = sum(p.numel() for p in model.parameters())
+                logger.info(f"LoRA rank {self.cfg.lora_rank} on '{name}': {wrapped} linear layers wrapped, "
+                            f"{trainable / 1e6:.1f}M of {total / 1e6:.1f}M parameters trainable")
 
     def prepare_optimizer(self):
         logger.info("Initialize optimizer and lr scheduler ...")
         self.optimizer = torch.optim.AdamW(
-            self.models.parameters(), lr=self.cfg.learning_rate, weight_decay=self.cfg.weight_decay, betas=self.cfg.opt_beta
+            [p for p in self.models.parameters() if p.requires_grad],
+            lr=self.cfg.learning_rate, weight_decay=self.cfg.weight_decay, betas=self.cfg.opt_beta
         )
 
     def prepare_accelerate(self):
@@ -586,7 +595,11 @@ class BaseTrainer:
     def save_state(self):
         logger.info(f"Saving checkpoint at step {self.step} to {self.ckpt_dir}")
         current_ckpt_dir = self.local_ckpt_dir / f"checkpoint_{self.step}"
-        current_ckpt_dir.mkdir(exist_ok=True, parents=True)
+        # write into a .tmp dir and rename once complete: a job killed mid-save must never leave a
+        # half-written checkpoint_<step> for --resume auto to pick up (it ignores non-numeric suffixes)
+        final_ckpt_dir, current_ckpt_dir = current_ckpt_dir, current_ckpt_dir.with_name(current_ckpt_dir.name + ".tmp")
+        shutil.rmtree(current_ckpt_dir, ignore_errors=True)
+        current_ckpt_dir.mkdir(parents=True)
         self.accelerator.save_state(current_ckpt_dir)
 
         if getattr(self.cfg, "use_ema", False) and getattr(self, "ema", None) is not None:
@@ -598,6 +611,10 @@ class BaseTrainer:
                     ema_tensors[f"{model_name}.{k}"] = v.detach().cpu()
 
             safetensors_save_file(ema_tensors, str(current_ckpt_dir / "ema.safetensors"))
+
+        shutil.rmtree(final_ckpt_dir, ignore_errors=True)
+        current_ckpt_dir.rename(final_ckpt_dir)
+        current_ckpt_dir = final_ckpt_dir
 
         if self.cfg.checkpoint_retention == "latest_and_best":
             # the new checkpoint is fully written above, so older ones are no longer needed to resume
