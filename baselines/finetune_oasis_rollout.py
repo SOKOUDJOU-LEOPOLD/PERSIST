@@ -5,6 +5,16 @@ both the standalone qualitative-video script and the FVD evaluation script
 
 DDIM loop copied from baselines/open-oasis/generate.py (see that file / finetune_oasis_generate.py
 for the original, single-episode, video-writing version this was factored out of).
+
+Generation is autoregressive (frame t+1 depends on frame t), so there is no way to parallelize
+across TIME within one episode -- the only parallelism axis is across independent episodes.
+generate_rollout_batch exploits that: the DDIM loop below was already shaped generically around a
+leading batch dim (B = x.shape[0] used throughout every tensor op), so batching several episodes'
+seed frames + actions together and running them through the SAME DDIM step in lockstep needs no
+change to the sampling math itself -- it only needed a batched entry/exit point, since the
+single-episode generate_rollout hardcoded B=1 via seed_frame[None,None] and a final x[0] index.
+generate_rollout is now a thin wrapper around generate_rollout_batch (unsqueeze in, index 0 out),
+so every existing single-episode caller is unaffected.
 """
 import torch
 from einops import rearrange
@@ -15,10 +25,10 @@ from finetune_oasis import sigmoid_beta_schedule
 
 
 @torch.no_grad()
-def generate_rollout(
+def generate_rollout_batch(
     model,
     vae,
-    seed_frame: torch.Tensor,
+    seed_frames: torch.Tensor,
     actions: torch.Tensor,
     num_frames: int,
     device: str,
@@ -26,21 +36,32 @@ def generate_rollout(
     ddim_steps: int = 10,
     desc: str = "Generating",
     show_progress: bool = True,
+    decode_chunk_size: int = 64,
 ) -> torch.Tensor:
-    """
+    """Batched version of generate_rollout: generates B independent episodes in lockstep (same
+    DDIM noise schedule -- it doesn't depend on content), one forward pass per DDIM step for the
+    whole batch instead of one pass per episode. Use this instead of calling generate_rollout in a
+    per-episode loop when generating many episodes on one GPU -- it amortizes the DiT model's
+    compute across more samples per step, which matters because a single episode alone likely
+    doesn't saturate an A100's compute.
+
     Args:
-        seed_frame: (3, H, W) float tensor in [0, 1].
-        actions: (T, 23) float tensor, Craftium's native action vector, ALREADY shifted by one
-            frame (actions[0] = zeros, actions[t] = the raw action that produced frame t) --
-            matching finetune_oasis_data.py's convention. Caller shifts, not this function, so
-            both training-data loading and generation share one shift implementation.
+        seed_frames: (B, 3, H, W) float tensor in [0, 1].
+        actions: (B, T, 23) float tensor, Craftium's native action vector, ALREADY shifted by one
+            frame per episode (see generate_rollout's docstring for the shift convention).
         num_frames: total frames to generate (including the n_prompt_frames seed frame(s)).
+        decode_chunk_size: how many (batch*time)-flattened frames are decoded through the VAE per
+            call at the end. The DDIM sampling loop above is memory-bounded regardless of
+            num_frames (windowed to model.max_frames), but the final decode is NOT windowed --
+            decoding B*num_frames frames in one call measurably OOMs a 40GB A100 once that
+            product gets into the thousands (e.g. batch=4 x 600 frames). 64 is comfortably within
+            what's already proven safe for a single ~600-frame episode's decode.
 
     Returns:
-        (num_frames, H, W, 3) uint8 tensor, CPU.
+        (B, num_frames, H, W, 3) uint8 tensor, CPU.
     """
-    x = seed_frame[None, None].to(device)  # (1, 1, 3, H, W)
-    actions = actions[None].to(device)  # (1, T, 23)
+    x = seed_frames[:, None].to(device)  # (B, 1, 3, H, W)
+    actions = actions.to(device)  # (B, T, 23)
 
     max_noise_level = 1000
     noise_range = torch.linspace(-1, max_noise_level - 1, ddim_steps + 1)
@@ -95,11 +116,73 @@ def generate_rollout(
             x[:, -1:] = x_pred[:, -1:]
 
     x = rearrange(x, "b t c h w -> (b t) (h w) c")
-    x = (vae.decode(x / scaling_factor) + 1) / 2
+    # Decode in chunks along the flattened (b*t) dim, NOT one call over all of it -- unlike the
+    # DDIM loop above (bounded by the model's sliding attention window regardless of num_frames),
+    # this decode has no such windowing: at batch>1 and num_frames=600, (b*t) can reach into the
+    # thousands, and decoding that many frames through the VAE's own attention blocks in one call
+    # measurably OOMs a 40GB A100 (batch=4 x 600 frames did, during this pipeline's own testing).
+    # A single episode's decode chunk stays exactly as cheap as the original unbatched code's.
+    #
+    # Each decoded chunk is converted straight to compact uint8 and moved to CPU immediately,
+    # NOT accumulated as float32 and only converted/moved at the end. Two distinct OOM bugs hit
+    # this exact spot this session:
+    #   1. GPU OOM: leaving all chunks on GPU before one big torch.cat -- at batch=8 x 600 frames
+    #      (4800 total flattened frames), that concatenation alone tried to allocate ~12GB and
+    #      OOM'd a 40GB A100, even though each individual vae.decode() call was already chunked
+    #      and small.
+    #   2. HOST RAM OOM: fixing #1 by moving chunks to CPU but keeping them as float32 -- 4800
+    #      frames x ~2.76MB/frame (float32, 640x360x3) is ~13GB of HOST memory, which combined
+    #      with the real video data + loaded models blew a 32GB SLURM --mem allocation (a
+    #      cgroup-level kill, "OUT_OF_MEMORY" in sacct, not a Python exception -- the job dies
+    #      silently with no traceback, only visible via `sacct`/the SLURM log's oom_kill line).
+    # Converting to uint8 PER CHUNK before accumulating (not after concatenating everything)
+    # cuts that accumulated memory 4x -- ~13GB float32 becomes ~3.3GB uint8, matching the size
+    # of the real video data it's compared against instead of dwarfing it.
+    decode_chunk = max(1, decode_chunk_size)
+    decoded = []
+    for i in range(0, x.shape[0], decode_chunk):
+        chunk = vae.decode(x[i : i + decode_chunk] / scaling_factor)
+        chunk = torch.clamp((chunk + 1) / 2, 0, 1)
+        chunk = (chunk * 255).byte().cpu()
+        decoded.append(chunk)
+    x = torch.cat(decoded, dim=0)
     x = rearrange(x, "(b t) c h w -> b t h w c", t=num_frames)
-    x = torch.clamp(x, 0, 1)
-    x = (x * 255).byte()
-    return x[0].cpu()
+    return x
+
+
+@torch.no_grad()
+def generate_rollout(
+    model,
+    vae,
+    seed_frame: torch.Tensor,
+    actions: torch.Tensor,
+    num_frames: int,
+    device: str,
+    n_prompt_frames: int = 1,
+    ddim_steps: int = 10,
+    desc: str = "Generating",
+    show_progress: bool = True,
+) -> torch.Tensor:
+    """
+    Single-episode entry point -- thin wrapper around generate_rollout_batch (batch size 1).
+    Kept for every existing caller (finetune_oasis_generate.py, generate_luanti_split_grids.py,
+    make_comparison_grid_oasis.py, etc.) so none of them need to change.
+
+    Args:
+        seed_frame: (3, H, W) float tensor in [0, 1].
+        actions: (T, 23) float tensor, Craftium's native action vector, ALREADY shifted by one
+            frame (actions[0] = zeros, actions[t] = the raw action that produced frame t) --
+            matching finetune_oasis_data.py's convention. Caller shifts, not this function, so
+            both training-data loading and generation share one shift implementation.
+        num_frames: total frames to generate (including the n_prompt_frames seed frame(s)).
+
+    Returns:
+        (num_frames, H, W, 3) uint8 tensor, CPU.
+    """
+    return generate_rollout_batch(
+        model, vae, seed_frame[None], actions[None], num_frames, device,
+        n_prompt_frames=n_prompt_frames, ddim_steps=ddim_steps, desc=desc, show_progress=show_progress,
+    )[0]
 
 
 def shift_actions(raw_action: torch.Tensor) -> torch.Tensor:

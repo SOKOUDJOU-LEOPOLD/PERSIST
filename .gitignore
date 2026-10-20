@@ -13,7 +13,13 @@ weights/
 ## locally for zero-shot eval, not vendored source). Our own scripts directly under
 ## baselines/ (e.g. eval_oasis_zeroshot.py) ARE tracked -- only the external clones and
 ## generated artifacts are excluded. See baselines/ in the Table 1 reproduction plan.
-baselines/open-oasis/
+## open-oasis (etched-ai/open-oasis @ f59deef, MIT) source IS vendored so every machine runs the
+## same Oasis model code; its weights (download from HF Etched/oasis-500m), demo media and git dir are not.
+baselines/open-oasis/*.safetensors
+baselines/open-oasis/media/
+baselines/open-oasis/sample_data/
+baselines/open-oasis/.cache/
+baselines/open-oasis/.git/
 baselines/WorldMem/
 baselines/checkpoints/
 baselines/prompts/
@@ -46,3 +52,6 @@ make_gif.py
 render_mesh_animation.py
 .amltconfig
 .amltignore
+## local pretrained weights
+checkpoints/
+baselines/open-oasis.upstream-git/
