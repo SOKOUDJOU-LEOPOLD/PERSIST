@@ -23,6 +23,7 @@ Example:
     accelerate launch --num_processes 1 ../finetune_oasis.py --smoke-test-steps 50            # single-GPU
     accelerate launch --multi_gpu --mixed_precision bf16 --num_processes 4 ../finetune_oasis.py ...  # multi-GPU
 """
+import glob
 import json
 import os
 import sys
@@ -452,6 +453,19 @@ class Args:
     not actually guaranteed (GPU float ops aren't bit-exact reproducible even with a fixed seed) --
     this loads the real optimizer state (Adam moments, LR schedule position) rather than
     re-deriving it."""
+    init_from: Optional[str] = None
+    """Path to a checkpoint (as saved by this script) to initialize ONLY the model weights from,
+    for starting a new fine-tune (e.g. on a different dataset) from an already fine-tuned
+    checkpoint instead of the original pretrained Oasis release. Unlike --resume-from, everything
+    else starts fresh: optimizer, warmup/LR schedule, step 0, a new wandb run, and a
+    step_000000.pt baseline is still saved. Loaded with strict=True (after build_dit_architecture
+    + the action-layer surgery), so the checkpoint's action layer must already be 25-dim --
+    requires --use-oasis-native-action-layout, checked explicitly below with a clear error rather
+    than letting a shape-mismatched strict load fail cryptically. --informed-action-init is
+    harmless to also pass (its effect is overwritten by the loaded checkpoint's own weights
+    immediately after) but has no effect in this mode. Auto-resume after a crash must still use
+    --resume-from against the run's own latest checkpoint, never --init-from -- this flag is only
+    for the one-time initial launch of a new run."""
     fresh_wandb_run: bool = False
     """When resuming (--resume-from set), start a brand-new wandb run instead of continuing the
     checkpoint's embedded wandb_run_id -- e.g. when moving a run to a different machine mid-flight
@@ -461,6 +475,14 @@ class Args:
     throughput/memory, per the plan's 'timed smoke test before committing to a full run' step."""
     log_every: int = 10
     checkpoint_every: int = 500
+    checkpoint_retention: Literal["all", "latest_and_best"] = "all"
+    """'all' keeps every step_NNNNNN.pt forever (stock behavior -- at 7.3GB each, this grows
+    without bound). 'latest_and_best' keeps only the newest step_NNNNNN.pt (full state, for
+    --resume-from) plus a separate best.pt (model weights only, no optimizer/scheduler -- not
+    needed for eval/merge) updated whenever val/loss improves, deleting the previous latest once
+    the new one is fully written. Bounds disk at roughly latest (7.3GB) + best (~2.4GB) regardless
+    of run length. Mirrors trainers/__init__.py's identical PERSIST-side option. Requires
+    val_every > 0 (validation is what "best" is measured against)."""
     output_dir: str = "outputs/finetune_oasis"
     num_workers: int = 4
     seed: int = 0
@@ -482,6 +504,22 @@ class Args:
     wandb_entity: str = "leopoldgatsing-texas-a-m-university"
     wandb_run_name: Optional[str] = None
     """Defaults to the output_dir's basename if not set."""
+
+    def __post_init__(self):
+        assert not (self.init_from and self.resume_from), (
+            "--init-from and --resume-from are mutually exclusive: --resume-from continues THIS "
+            "run (model+optimizer+step), --init-from starts a NEW run from another run's weights only."
+        )
+        if self.init_from and not self.use_oasis_native_action_layout:
+            raise ValueError(
+                "--init-from requires --use-oasis-native-action-layout: the checkpoint's action "
+                "layer is 25-dim (Oasis's native layout), but without this flag the model being "
+                "built here would have a 23-dim action layer -- a shape mismatch on strict load."
+            )
+        if self.checkpoint_retention == "latest_and_best" and self.val_every <= 0:
+            raise ValueError(
+                "--checkpoint-retention latest_and_best picks best.pt by val/loss: set --val-every > 0."
+            )
 
 
 def main(args: Args):
@@ -516,6 +554,28 @@ def main(args: Args):
         args.oasis_ckpt, args.vae_ckpt, device, action_dim=action_dim,
         informed_action_init=args.informed_action_init,
     )
+
+    # --init-from: overwrite the model weights with another run's checkpoint (model only -- see
+    # Args.init_from docstring for why this is deliberately NOT the same path as --resume-from).
+    if args.init_from is not None:
+        init_ckpt = torch.load(args.init_from, map_location=device, weights_only=False)
+        init_state = init_ckpt["model"]
+        gated_action = "external_cond.gate" in init_state
+        weight_key = "external_cond.linear.weight" if gated_action else "external_cond.weight"
+        ckpt_action_dim = init_state[weight_key].shape[1]
+        if ckpt_action_dim != action_dim:
+            raise ValueError(
+                f"--init-from checkpoint's action layer is {ckpt_action_dim}-dim "
+                f"({args.init_from}), but this run is building a {action_dim}-dim action layer "
+                f"(--use-oasis-native-action-layout={args.use_oasis_native_action_layout}). "
+                f"These must match for a strict load."
+            )
+        model.load_state_dict(init_state, strict=True)
+        if is_main:
+            print(f"init_from=True: loaded model weights only from {args.init_from} "
+                  f"(step {init_ckpt.get('step')}); optimizer/scheduler/step start fresh.")
+        del init_ckpt, init_state
+        torch.cuda.empty_cache()
 
     # Loaded ONCE, here, if resuming -- cached in resume_ckpt and reused later for
     # optimizer/scheduler state too (once those exist), rather than re-reading a multi-GB file
@@ -677,6 +737,14 @@ def main(args: Args):
 
     total_steps = args.smoke_test_steps if args.smoke_test_steps is not None else args.num_steps
     step = start_step
+    # Restored from any existing best.pt (e.g. on --resume-from) so a resumed run only replaces
+    # best.pt when it actually beats the recorded loss, not unconditionally on the next val check.
+    best_val_loss = float("inf")
+    best_ckpt_path = os.path.join(args.output_dir, "best.pt")
+    if args.checkpoint_retention == "latest_and_best" and os.path.exists(best_ckpt_path):
+        best_val_loss = torch.load(best_ckpt_path, map_location="cpu", weights_only=False)["val_loss"]
+        if is_main:
+            print(f"Found existing best.pt (val/loss={best_val_loss:.4f}); will only replace it if beaten.")
     t0 = time.time()
     step_times = []
     pbar = tqdm(total=total_steps, initial=start_step, desc="Fine-tuning Oasis", disable=not is_main)
@@ -763,6 +831,17 @@ def main(args: Args):
                                 "train_eval/loss": train_eval_metrics["loss"], "train_eval/psnr": train_eval_metrics["psnr"],
                                 "train_eval/ssim": train_eval_metrics["ssim"], "train_eval/lpips": train_eval_metrics["lpips"],
                             }, step=step)
+                        if args.checkpoint_retention == "latest_and_best" and val_metrics["loss"] < best_val_loss:
+                            best_val_loss = val_metrics["loss"]
+                            # Write to a temp path and rename into place, so a crash mid-save never
+                            # leaves best.pt truncated/unloadable (same pattern as PERSIST's save_best).
+                            tmp_path = best_ckpt_path + ".tmp"
+                            torch.save({
+                                "model": accelerator.unwrap_model(model).state_dict(),
+                                "step": step, "val_loss": best_val_loss, "args": vars(args),
+                            }, tmp_path)
+                            os.replace(tmp_path, best_ckpt_path)
+                            print(f"[step {step}] New best val/loss={best_val_loss:.4f} -> {best_ckpt_path}")
                     accelerator.wait_for_everyone()
 
                 if args.smoke_test_steps is None and step % args.checkpoint_every == 0:
@@ -776,6 +855,13 @@ def main(args: Args):
                         }, ckpt_path)
                         if args.use_wandb:
                             wandb.log({"checkpoint_step": step}, step=step)
+                        if args.checkpoint_retention == "latest_and_best":
+                            # ckpt_path is fully written (torch.save above completed) before any
+                            # older one is removed, so this run is never without a resumable
+                            # checkpoint on disk even if interrupted mid-cleanup.
+                            for old in glob.glob(os.path.join(args.output_dir, "step_*.pt")):
+                                if old != ckpt_path:
+                                    os.remove(old)
 
     pbar.close()
     elapsed = time.time() - t0
@@ -803,6 +889,10 @@ def main(args: Args):
             "wandb_run_id": wandb.run.id if args.use_wandb else None,
         }, final_path)
         print(f"Saved final checkpoint to {final_path}")
+        if args.checkpoint_retention == "latest_and_best":
+            # final_path supersedes the last "latest" step_*.pt -- same no-accumulation intent.
+            for old in glob.glob(os.path.join(args.output_dir, "step_*.pt")):
+                os.remove(old)
 
     if args.use_wandb and is_main:
         wandb.log({
