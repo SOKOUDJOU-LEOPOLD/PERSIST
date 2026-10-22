@@ -24,7 +24,7 @@ export PYTHONPATH=.
 export WANDB_MODE=${WANDB_MODE:-online}
 
 COMPONENT=$1
-GPUS=$(nvidia-smi -L | wc -l)
+GPUS=${GPUS:-$(nvidia-smi -L | wc -l)}  # GPUS=2 uses the first 2 (set CUDA_VISIBLE_DEVICES to pick others)
 WORKERS=${WORKERS:-16}
 
 P=checkpoints/pretrained
@@ -63,7 +63,7 @@ case "$COMPONENT" in
     camera)
         SCRIPT=train_scripts/train_transformer_camera.py
         # the camera script requires i_log % i_val == 0
-        ARGS="${COMMON/--i-log 100/--i-log 500} $LORA --run-name full29k-camera-model$SUFFIX --output-dir $OUT/camera_transformer
+        ARGS="${COMMON/--i-log 100/--i-log ${I_VAL:-500}} $LORA --run-name full29k-camera-model$SUFFIX --output-dir $OUT/camera_transformer
           --wandb-run-name camera-model
           --pretrained-checkpoint $P/camera-model/model.safetensors --pretrained-checkpoint-model-key camera
           --model.cam-rotation-output-rep delta_angle --model.cam-fov-output-rep delta" ;;
