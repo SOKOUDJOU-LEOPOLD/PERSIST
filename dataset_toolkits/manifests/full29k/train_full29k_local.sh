@@ -30,11 +30,16 @@ WORKERS=${WORKERS:-16}
 P=checkpoints/pretrained
 OUT=${OUT_DIR:-outputs/runs_full29k}  # env overrides (OUT_DIR, DATASET, TOTAL_STEPS, I_VAL, I_SAVE) are for short tests only
 mkdir -p "$OUT"
+# recipe overrides, same as train_full29k.slurm: LR, WARMUP, GRAD_ACC, NOISE_COND (diffusers only),
+# RUN_SUFFIX (appended to --run-name), LORA_RANK (>0: LoRA fine-tune), RETENTION (latest_and_best | all)
+SUFFIX=${RUN_SUFFIX:+-$RUN_SUFFIX}
+DIFFUSION="diffusion:diffusion-forcing ${NOISE_COND:+--diffusion.noise-cond $NOISE_COND}"
+LORA="${LORA_RANK:+--lora-rank $LORA_RANK}"
 # total_steps is a multiple of i_save so the final step is checkpointed
 COMMON="--dataset-path ${DATASET:-datasets/luanti_full29k} --batch-size 2 --total-steps ${TOTAL_STEPS:-20000}
-  --lr-warmup-steps 1000 --i-log 100 --i-val ${I_VAL:-500} --i-print 100 --i-save ${I_SAVE:-1000}
+  --learning-rate ${LR:-1e-4} --lr-warmup-steps ${WARMUP:-1000} --grad-accumulation-steps ${GRAD_ACC:-1} --i-log 100 --i-val ${I_VAL:-500} --i-print 100 --i-save ${I_SAVE:-1000}
   --dataloader-workers $WORKERS --val-dataloader-workers 2
-  --full-pass-validation --checkpoint-retention latest_and_best --dataloader-start-method forkserver --no-epoch-boundaries
+  --full-pass-validation --checkpoint-retention ${RETENTION:-latest_and_best} --dataloader-start-method forkserver --no-epoch-boundaries
   --use-wandb --wandb-project persist-luanti-full29k"
 ONTHEFLY="--encode-latents-on-the-fly --voxel-encoder-checkpoint $P/voxel-encoder/model.safetensors
   --pixel-vae-checkpoint $P/pixel-vae/model.safetensors"
@@ -42,23 +47,23 @@ ONTHEFLY="--encode-latents-on-the-fly --voxel-encoder-checkpoint $P/voxel-encode
 case "$COMPONENT" in
     voxel)
         SCRIPT=train_scripts/train_diffuser_voxel.py
-        ARGS="$COMMON $ONTHEFLY --run-name full29k-voxel-denoiser-xl --output-dir $OUT/voxel_diffuser
+        ARGS="$COMMON $ONTHEFLY $LORA --run-name full29k-voxel-denoiser-xl$SUFFIX --output-dir $OUT/voxel_diffuser
           --wandb-run-name voxel-denoiser-xl
           --pretrained-checkpoint $P/voxel-denoiser-xl/model.safetensors --pretrained-checkpoint-model-key denoiser
-          --denoiser.patch-size 1 ${GRAD_CKPT:+--denoiser.gradient-checkpointing} diffusion:diffusion-forcing" ;;
+          --denoiser.patch-size 1 ${GRAD_CKPT:+--denoiser.gradient-checkpointing} $DIFFUSION" ;;
     pixel)
         SCRIPT=train_scripts/train_diffuser_pixel.py
-        ARGS="$COMMON $ONTHEFLY --run-name full29k-pixel-denoiser --output-dir $OUT/pixel_diffuser
+        ARGS="$COMMON $ONTHEFLY $LORA --run-name full29k-pixel-denoiser$SUFFIX --output-dir $OUT/pixel_diffuser
           --wandb-run-name pixel-denoiser
           --voxel-decoder-checkpoint $P/voxel-decoder/model.safetensors --voxel-decoder-batch-size 2
           --pretrained-checkpoint $P/pixel-denoiser/model.safetensors --pretrained-checkpoint-model-key denoiser
           --pretrained-checkpoint-extra $P/voxel-class-embedder/model.safetensors
           --pretrained-checkpoint-extra-model-key voxel_class_embedder
-          ${GRAD_CKPT:+--denoiser.gradient-checkpointing} diffusion:diffusion-forcing" ;;
+          ${GRAD_CKPT:+--denoiser.gradient-checkpointing} $DIFFUSION" ;;
     camera)
         SCRIPT=train_scripts/train_transformer_camera.py
         # the camera script requires i_log % i_val == 0
-        ARGS="${COMMON/--i-log 100/--i-log 500} --run-name full29k-camera-model --output-dir $OUT/camera_transformer
+        ARGS="${COMMON/--i-log 100/--i-log 500} $LORA --run-name full29k-camera-model$SUFFIX --output-dir $OUT/camera_transformer
           --wandb-run-name camera-model
           --pretrained-checkpoint $P/camera-model/model.safetensors --pretrained-checkpoint-model-key camera
           --model.cam-rotation-output-rep delta_angle --model.cam-fov-output-rep delta" ;;
