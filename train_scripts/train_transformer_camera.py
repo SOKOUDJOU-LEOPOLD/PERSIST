@@ -57,6 +57,13 @@ class TrainingArgs(BaseTrainingArgs):
     ckpt_to_load: str | None = None
     """Path to a specific accelerator checkpoint folder which we want to resume from"""
 
+    lora_rank: int = 0
+    """If > 0, fine-tune with LoRA (utils/lora.py): the loaded weights are frozen and only rank-`lora_rank`
+    adapters on the attention/MLP linear layers train. Merge for inference with scripts/merge_lora_checkpoint.py."""
+
+    lora_alpha: float | None = None
+    """LoRA scaling numerator (update scaled by alpha / rank); defaults to lora_rank."""
+
     dataset_path: str = "datasets"
     """Path to training dataset"""
 

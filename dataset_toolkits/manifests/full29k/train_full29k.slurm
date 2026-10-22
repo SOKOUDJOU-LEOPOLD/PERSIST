@@ -36,7 +36,7 @@ P=checkpoints/pretrained
 OUT=${OUT_DIR:-outputs/runs_full29k}  # env overrides (OUT_DIR, DATASET, TOTAL_STEPS, I_VAL, I_SAVE) are for short tests only
 # recipe overrides (defaults = the original full29k run): LR, WARMUP, GRAD_ACC, NOISE_COND (diffusers only),
 # RUN_SUFFIX (appended to --run-name, so an experiment gets its own run dir and wandb run),
-# LORA_RANK (>0: LoRA fine-tune, diffusers only), RETENTION (latest_and_best | all: keep every checkpoint_<step>)
+# LORA_RANK (>0: LoRA fine-tune; voxel, pixel and camera), RETENTION (latest_and_best | all: keep every checkpoint_<step>)
 SUFFIX=${RUN_SUFFIX:+-$RUN_SUFFIX}
 DIFFUSION="diffusion:diffusion-forcing ${NOISE_COND:+--diffusion.noise-cond $NOISE_COND}"
 LORA="${LORA_RANK:+--lora-rank $LORA_RANK}"
@@ -68,7 +68,7 @@ case "$COMPONENT" in
     camera)
         SCRIPT=train_scripts/train_transformer_camera.py
         # the camera script requires i_log % i_val == 0
-        ARGS="${COMMON/--i-log 100/--i-log 500} --run-name full29k-camera-model$SUFFIX --output-dir $OUT/camera_transformer
+        ARGS="${COMMON/--i-log 100/--i-log 500} $LORA --run-name full29k-camera-model$SUFFIX --output-dir $OUT/camera_transformer
           --wandb-run-name camera-model
           --pretrained-checkpoint $P/camera-model/model.safetensors --pretrained-checkpoint-model-key camera
           --model.cam-rotation-output-rep delta_angle --model.cam-fov-output-rep delta" ;;
