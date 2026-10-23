@@ -111,8 +111,8 @@ class BaseTrainingArgs:
 
     checkpoint_retention: Literal["all", "latest_and_best"] = "all"
     """'all' keeps every checkpoint_<step> (stock behavior). 'latest_and_best' keeps only the newest
-    checkpoint_<step> (full state, for resuming) plus checkpoints/best/ (model + EMA weights of the
-    lowest full-pass val loss so far; needs full_pass_validation)."""
+    checkpoint_<step> (full state, for resuming). Either way, with full_pass_validation, checkpoints/best/
+    holds the model + EMA weights of the lowest full-pass val loss so far (since this process started)."""
 
     # ---- Arguments to be filled in at runtime ----
     run_id: Fixed[str | None] = None
@@ -401,7 +401,7 @@ class BaseTrainer:
                                     val_counts[k] += rank_counts[k]
                         for k, v in val_sums.items():
                             metrics[f"val_loss/{k}"] += (v / val_counts[k]) / max(self.i_log // self.i_val, 1)
-                        if self.cfg.checkpoint_retention == "latest_and_best" and self.accelerator.is_main_process:
+                        if self.accelerator.is_main_process:  # best/ is tracked under either retention policy
                             val_loss = val_sums["loss"] / val_counts["loss"]
                             if val_loss < self.best_val_loss:
                                 self.best_val_loss = val_loss
