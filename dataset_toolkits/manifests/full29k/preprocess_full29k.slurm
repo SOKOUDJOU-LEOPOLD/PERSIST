@@ -18,7 +18,7 @@ source .venv/bin/activate
 export PYTHONPATH=.
 
 STAGE=$1
-DS=datasets/luanti_full29k
+DS=${DS:-datasets/luanti_full29k}  # other datasets: DS=... and sbatch --output=<DS>/logs/...
 RANK=$SLURM_ARRAY_TASK_ID
 WORLD=$SLURM_ARRAY_TASK_COUNT
 

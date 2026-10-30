@@ -37,38 +37,43 @@ OUT=${OUT_DIR:-outputs/runs_full29k}  # env overrides (OUT_DIR, DATASET, TOTAL_S
 # recipe overrides (defaults = the original full29k run): LR, WARMUP, GRAD_ACC, NOISE_COND (diffusers only),
 # RUN_SUFFIX (appended to --run-name, so an experiment gets its own run dir and wandb run),
 # LORA_RANK (>0: LoRA fine-tune; voxel, pixel and camera), RETENTION (latest_and_best | all: keep every checkpoint_<step>)
+# VAL_AT_START=1: one validation pass after step 1, the starting-point baseline of a fine-tune
+# I_VAL and I_SAVE count optimizer updates: the trainer multiplies them by GRAD_ACC to get micro-batch steps
+# other datasets: RUN_PREFIX (replaces "full29k" in --run-name), WANDB_PROJECT, INIT_CKPT (start weights instead of
+# the official ones, e.g. a merged LoRA checkpoint from inference_weights/; same parameter names, so it loads the same way)
 SUFFIX=${RUN_SUFFIX:+-$RUN_SUFFIX}
+PREFIX=${RUN_PREFIX:-full29k}
 DIFFUSION="diffusion:diffusion-forcing ${NOISE_COND:+--diffusion.noise-cond $NOISE_COND}"
 LORA="${LORA_RANK:+--lora-rank $LORA_RANK}"
 # total_steps is a multiple of i_save so the final step is checkpointed
 COMMON="--dataset-path ${DATASET:-datasets/luanti_full29k} --batch-size 2 --total-steps ${TOTAL_STEPS:-20000}
   --learning-rate ${LR:-1e-4} --lr-warmup-steps ${WARMUP:-1000} --grad-accumulation-steps ${GRAD_ACC:-1} --i-log 100 --i-val ${I_VAL:-500} --i-print 100 --i-save ${I_SAVE:-1000}
   --dataloader-workers $WORKERS --val-dataloader-workers 2
-  --full-pass-validation --checkpoint-retention ${RETENTION:-latest_and_best} --dataloader-start-method forkserver --no-epoch-boundaries
-  --use-wandb --wandb-project persist-luanti-full29k"
+  --full-pass-validation ${VAL_AT_START:+--validate-at-start} --checkpoint-retention ${RETENTION:-latest_and_best} --dataloader-start-method forkserver --no-epoch-boundaries
+  --use-wandb --wandb-project ${WANDB_PROJECT:-persist-luanti-full29k}"
 ONTHEFLY="--encode-latents-on-the-fly --voxel-encoder-checkpoint $P/voxel-encoder/model.safetensors
   --pixel-vae-checkpoint $P/pixel-vae/model.safetensors"
 
 case "$COMPONENT" in
     voxel)
         SCRIPT=train_scripts/train_diffuser_voxel.py
-        ARGS="$COMMON $ONTHEFLY $LORA --run-name full29k-voxel-denoiser-xl$SUFFIX --output-dir $OUT/voxel_diffuser
+        ARGS="$COMMON $ONTHEFLY $LORA --run-name $PREFIX-voxel-denoiser-xl$SUFFIX --output-dir $OUT/voxel_diffuser
           --wandb-run-name voxel-denoiser-xl
-          --pretrained-checkpoint $P/voxel-denoiser-xl/model.safetensors --pretrained-checkpoint-model-key denoiser
+          --pretrained-checkpoint ${INIT_CKPT:-$P/voxel-denoiser-xl/model.safetensors} --pretrained-checkpoint-model-key denoiser
           --denoiser.patch-size 1 --denoiser.gradient-checkpointing $DIFFUSION" ;;
     pixel)
         SCRIPT=train_scripts/train_diffuser_pixel.py
-        ARGS="$COMMON $ONTHEFLY $LORA --run-name full29k-pixel-denoiser$SUFFIX --output-dir $OUT/pixel_diffuser
+        ARGS="$COMMON $ONTHEFLY $LORA --run-name $PREFIX-pixel-denoiser$SUFFIX --output-dir $OUT/pixel_diffuser
           --wandb-run-name pixel-denoiser
           --voxel-decoder-checkpoint $P/voxel-decoder/model.safetensors --voxel-decoder-batch-size 2
-          --pretrained-checkpoint $P/pixel-denoiser/model.safetensors --pretrained-checkpoint-model-key denoiser
+          --pretrained-checkpoint ${INIT_CKPT:-$P/pixel-denoiser/model.safetensors} --pretrained-checkpoint-model-key denoiser
           --pretrained-checkpoint-extra $P/voxel-class-embedder/model.safetensors
           --pretrained-checkpoint-extra-model-key voxel_class_embedder
           --denoiser.gradient-checkpointing $DIFFUSION" ;;
     camera)
         SCRIPT=train_scripts/train_transformer_camera.py
         # the camera script requires i_log % i_val == 0
-        ARGS="${COMMON/--i-log 100/--i-log 500} $LORA --run-name full29k-camera-model$SUFFIX --output-dir $OUT/camera_transformer
+        ARGS="${COMMON/--i-log 100/--i-log 500} $LORA --run-name $PREFIX-camera-model$SUFFIX --output-dir $OUT/camera_transformer
           --wandb-run-name camera-model
           --pretrained-checkpoint $P/camera-model/model.safetensors --pretrained-checkpoint-model-key camera
           --model.cam-rotation-output-rep delta_angle --model.cam-fov-output-rep delta" ;;

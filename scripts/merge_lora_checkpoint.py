@@ -1,8 +1,9 @@
-"""Merge a LoRA fine-tuning checkpoint (voxel denoiser or camera model) into plain weights for the inference pipeline.
+"""Merge a LoRA fine-tuning checkpoint (voxel denoiser, camera model or pixel denoiser) into plain weights for the inference pipeline.
 
 Rebuilds the model, injects LoRA with the training rank/alpha, loads the checkpoint's model.safetensors
 (base + adapters; or the EMA adapters from ema.safetensors with --ema), merges, and saves a state dict with the
-original parameter names: --checkpoints.voxel-denoiser / --checkpoints.camera-model in scripts/run_inference.py
+original parameter names: --checkpoints.voxel-denoiser / --checkpoints.camera-model / --checkpoints.pixel-denoiser in
+scripts/run_inference.py
 load it unchanged.
 
 Example:
@@ -16,7 +17,7 @@ import torch
 import tyro
 from safetensors.torch import load_file, save_file
 
-from models import camera_transformer, dit_voxel
+from models import camera_transformer, dit_pixel, dit_voxel
 from utils.lora import inject_lora, merge_lora
 
 
@@ -26,7 +27,7 @@ class Args:
     rank: int
     out: str
     alpha: float | None = None
-    component: Literal["voxel", "camera"] = "voxel"
+    component: Literal["voxel", "camera", "pixel"] = "voxel"
     patch_size: int = 1
     """voxel only: 1 = XL voxel denoiser (as trained), 2 = S"""
     ema: bool = False
@@ -38,6 +39,11 @@ def build_model(args: Args):
         cfg = dit_voxel.VoxelDitDenoiserArgs()
         cfg.patch_size = args.patch_size
         return getattr(dit_voxel, cfg.name)(**vars(cfg)), "denoiser."
+    if args.component == "pixel":
+        # LoRA only wraps linear layers, so the voxel class embedder (model_1.safetensors, an nn.Embedding) stays at
+        # its pretrained value and is not part of the merge: --checkpoints.voxel-class-embedder keeps the pretrained file
+        cfg = dit_pixel.FrameDepthStackPixelDitDenoiserArgs()
+        return getattr(dit_pixel, cfg.name)(**vars(cfg)), "denoiser."
     # same output representations as the camera fine-tune in train_full29k.slurm
     cfg = camera_transformer.CameraTransformerArgs(cam_rotation_output_rep="delta_angle", cam_fov_output_rep="delta")
     return getattr(camera_transformer, cfg.name)(**vars(cfg)), "camera."

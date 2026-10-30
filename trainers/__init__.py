@@ -100,6 +100,11 @@ class BaseTrainingArgs:
     across all val episodes) instead of drawing one random batch via next() on an infinite
     iterator. Default off so existing non-finetune configs/runs are unaffected."""
 
+    validate_at_start: bool = False
+    """Also run validation after the first micro-batch step of a fresh run, as the starting-point baseline for a
+    fine-tune: one micro-batch at warm-up lr (and LoRA's zero-initialised B) leaves the loaded weights unchanged in
+    effect. Logged as 'Start-of-run validation loss' and tracked for best/."""
+
     dataloader_start_method: Literal["fork", "forkserver", "spawn"] | None = None
     """How dataloader worker processes are started (None = platform default, fork on Linux). 'forkserver' never forks
     the training process itself, which avoids rare deadlocks when workers are (re)created while CUDA/NCCL threads
@@ -376,7 +381,8 @@ class BaseTrainer:
                 progress_bar.update(1)
 
             # Validation step
-            if self.i_val > 0 and self.step % self.i_val == 0:
+            at_start = self.cfg.validate_at_start and self.cfg.full_pass_validation and self.step == 1
+            if self.i_val > 0 and (self.step % self.i_val == 0 or at_start):
                 del batch
                 with torch.no_grad(), self.accelerator.autocast():
                     if self.cfg.full_pass_validation:
@@ -399,10 +405,15 @@ class BaseTrainer:
                                 for k in rank_sums:
                                     val_sums[k] += rank_sums[k]
                                     val_counts[k] += rank_counts[k]
-                        for k, v in val_sums.items():
-                            metrics[f"val_loss/{k}"] += (v / val_counts[k]) / max(self.i_log // self.i_val, 1)
+                        if not at_start:  # the start-of-run baseline goes to the log only, not the wandb val curve
+                            for k, v in val_sums.items():
+                                metrics[f"val_loss/{k}"] += (v / val_counts[k]) / max(self.i_log // self.i_val, 1)
                         if self.accelerator.is_main_process:  # best/ is tracked under either retention policy
                             val_loss = val_sums["loss"] / val_counts["loss"]
+                            if at_start:
+                                logger.info(f"Start-of-run validation loss: {val_loss:.4f} (step {self.step})")
+                                if self.cfg.use_wandb:
+                                    wandb.log({"val_loss/start_of_run": val_loss}, step=self.step)
                             if val_loss < self.best_val_loss:
                                 self.best_val_loss = val_loss
                                 self.save_best(val_loss)

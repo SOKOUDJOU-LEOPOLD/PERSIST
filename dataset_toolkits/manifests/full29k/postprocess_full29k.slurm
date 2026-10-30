@@ -15,8 +15,9 @@ set -euo pipefail
 cd /scratch/user/lsokoudj/PERSIST
 source .venv/bin/activate
 export PYTHONPATH=.
-DS=datasets/luanti_full29k
+DS=${DS:-datasets/luanti_full29k}  # other datasets: DS=..., VAL=... and sbatch --output=<DS>/logs/...
 M=dataset_toolkits/manifests/full29k
+VAL=${VAL:-$M/val_sha256.txt}
 
 summary() {
     python - <<EOF
@@ -34,7 +35,7 @@ python dataset_toolkits/build_metadata.py --output_dir $DS
 summary
 if [ "$1" = "finalize" ]; then
     python dataset_toolkits/assign_validation_split.py --dataset_dir $DS \
-        --val_sha256_file $M/val_sha256.txt --replace_rejected
+        --val_sha256_file $VAL --replace_rejected
     python dataset_toolkits/process_mt_data.py --output_dir $DS --compute_cropped_voxels \
         --max_workers $SLURM_CPUS_PER_TASK
     summary
