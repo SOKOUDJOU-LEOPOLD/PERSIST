@@ -30,9 +30,13 @@ names = [e["name"] for e in s["episodes"] if e["split"] == "eval"]
 open("$DS/eval_dirs.txt", "w").write("".join(f"{s['environment']}/{n}/\n" for n in names))
 print(len(names), "eval episodes")
 EOF
-zstd -dc data/luanti/motworld-hudnav-20k.tar.zst | tar -xf - -C $DS/raw --files-from=$DS/eval_dirs.txt
+if [ "$(ls $DS/raw/OpenWorldCreativeHud-v0 2>/dev/null | wc -l)" -lt 200 ]; then  # skip on a rerun
+    zstd -dc data/luanti/motworld-hudnav-20k.tar.zst | tar -xf - -C $DS/raw --files-from=$DS/eval_dirs.txt
+fi
 echo "extracted $(ls $DS/raw/OpenWorldCreativeHud-v0 | wc -l) episode dirs"
 
+# process_mt_data.py reads the generation settings from dataset_params.json: same archive family as luanti_full29k
+cp datasets/luanti_full29k/dataset_params.json $DS/dataset_params.json
 cp dataset_toolkits/default_mt_voxel_classdict.json $DS/mt_voxel_classdict.json
 W=$SLURM_CPUS_PER_TASK
 echo "=== check $(date) ===";    python dataset_toolkits/build_metadata.py --output_dir $DS
