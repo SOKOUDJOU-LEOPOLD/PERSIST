@@ -251,7 +251,9 @@ def build_context(batch: dict, num_frames: int, use_camera_gt: bool, include_ini
         "camera": batch["camera"] if use_camera_gt else batch["camera"][:, :1],
     }
     if include_initial_voxel_frame:
-        context["voxel"] = batch["voxel_classes"][:, :1]  # (B, 1, X, Y, Z) class ids; pipeline encodes
+        # (B, 1, X, Y, Z) class ids; pipeline encodes. contiguous: for B > 1 the slice is strided and the voxel
+        # encoder's one-hot does a .view() on it
+        context["voxel"] = batch["voxel_classes"][:, :1].contiguous()
     return context
 
 
